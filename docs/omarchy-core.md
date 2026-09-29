@@ -51,10 +51,10 @@ unshare --user --map-auto --map-root-user rm -rf $OUT/root-try
 ```
 
 The stage was validated this way on the 2026-09-29 image (the Omarchy Phone build, 1100 MiB). It ran
-twice (the second run changed nothing: +0.0 MiB, one hook line), and all 19 checks passed. The
+twice (the second run changed nothing: +0.0 MiB, one hook line), and all 22 checks passed. The
 checks: `bash -n` on the 31 shell scripts (the Python menu is parsed separately); theme state written (`colors.toml`, `foot.ini`, `hyprland.lua`,
 `shell.toml`, `btop.theme`, `theme.name`); `colors.toml` has every key the phone shell's `Theme.qml`
-reads; `omarchy-theme-list` (22), `omarchy-theme-current`, and `omarchy theme list` through the
+reads; `omarchy-theme-list` (22, and again from a login shell with no `OMARCHY_*` set, which proves the profile.d route), `omarchy-theme-current`, and `omarchy theme list` through the
 dispatcher; `omarchy-version`; a switch to Catppuccin Latte (light) and back; `foot --check-config`
 with the user `foot.ini` and the theme include; the phone menu parsed (root: Style, Setup, Update,
 Trigger, Learn, About, System); and fzf and jq running under qemu. The new ELF files (`fzf`, `jq`,
@@ -73,7 +73,7 @@ Hyprland 0.56.2 `--verify-config` accepts `omarchy-core.lua`, and it also accept
 | `/usr/share/omarchy-core/bin` | the phone replacements (next section) |
 | `/usr/share/omarchy-core` | `omarchy-menu.phone.jsonc` (which menu rows the phone shows), `keybindings.txt`, `hypr/omarchy-core.lua`, `OMARCHY_VERSION` |
 | `/usr/local/bin` | symlinks to all of the above, plus 11 Omarchy helper names that point at `omarchy-core-noop` (`bin-noop.txt`) |
-| `/etc/profile.d/omarchy.sh` | `OMARCHY_PATH`, `OMARCHY_CORE`, `OMARCHY_THEME_SKIP_BACKGROUND=1` for SSH and getty shells |
+| `/etc/profile.d/omarchy.sh`, `/etc/environment.d/50-omarchy.conf`, `/etc/environment` | `OMARCHY_PATH`, `OMARCHY_CORE`, `OMARCHY_THEME_SKIP_BACKGROUND=1`, for every way in: login shells, the systemd user manager (and so the phone session), and plain `ssh phone cmd` (through pam_env). Omarchy's scripts don't default `OMARCHY_PATH` |
 | `/usr/share/applications/omarchy-menu.desktop` | "Omarchy" on the phone's home grid (a touch way into the menu) |
 | `~/.config` (`/etc/skel` and the user) | `foot/foot.ini` (see below), `omarchy/{themes,extensions}`, `omarchy/hooks/theme-set.d/10-omarchy-phone-shell` |
 | `~/.config/hypr/hyprland.lua` | **one appended line** (`pcall(dofile, "/usr/share/omarchy-core/hypr/omarchy-core.lua")`, with a marker comment). This is the only point where the stage meets the Omarchy Phone session config. It is appended at build time, not in git |
@@ -200,7 +200,10 @@ phone shell but doesn't add a process.
 
 - **Nothing has run on the phone.** Still to try there: the keys from the Bluetooth keyboard, the
   floating menu window on the scrolling layout, taps in fzf inside foot, `omarchy-restart-shell`
-  bringing the shell back with its environment, and `gsettings`/dconf for the Phone app.
+  bringing the shell back with its environment, `gsettings`/dconf for the Phone app, and
+  `omarchy-notification-send` reaching the phone shell. If the menu opens behind a fullscreen app
+  column, try Hyprland's `misc.new_window_takes_over_fullscreen`. The `/etc/environment` route
+  (pam_env for `ssh phone cmd`) can't be tried in a chroot.
 - Live theme follow needs the `Theme.qml` change described under Colours (in the Omarchy Phone repo).
 - `build-rootfs.sh` doesn't call this stage. Run it by hand between `config` and `strip`, or add it
   to the default `STAGES` once it has proven itself.

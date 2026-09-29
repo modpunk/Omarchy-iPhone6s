@@ -141,7 +141,15 @@ stage_install() {
 	for f in $(list "$DATA/bin-upstream.txt"); do ln -sfn "/usr/share/omarchy/bin/$f" "$ROOT/usr/local/bin/$f"; done
 	for f in "$DATA"/bin/*; do ln -sfn "/usr/share/omarchy-core/bin/${f##*/}" "$ROOT/usr/local/bin/${f##*/}"; done
 	for f in $(list "$DATA/bin-noop.txt"); do ln -sfn /usr/share/omarchy-core/bin/omarchy-core-noop "$ROOT/usr/local/bin/$f"; done
+	# The same three variables for every way in: login shells (profile.d), the
+	# systemd user manager and so the phone session (environment.d), and SSH
+	# commands without a login shell (pam_env reads /etc/environment).
 	install -D -m 644 "$DATA/profile.d/omarchy.sh" "$ROOT/etc/profile.d/omarchy.sh"
+	mkdir -p "$ROOT/etc/environment.d"
+	sed -n 's/^export //p' "$DATA/profile.d/omarchy.sh" > "$ROOT/etc/environment.d/50-omarchy.conf"
+	touch "$ROOT/etc/environment"
+	sed -i '/^OMARCHY_\(PATH\|CORE\|THEME_SKIP_BACKGROUND\)=/d' "$ROOT/etc/environment"
+	cat "$ROOT/etc/environment.d/50-omarchy.conf" >> "$ROOT/etc/environment"
 	install -D -m 644 "$DATA/applications/omarchy-menu.desktop" "$ROOT/usr/share/applications/omarchy-menu.desktop"
 	chown -R 0:0 "$o" "$c" "$ROOT/usr/share/licenses/omarchy"
 
@@ -168,6 +176,7 @@ stage_install() {
 	rm -rf "$ROOT/etc/skel/.local/state/omarchy/current"
 	cp -a "$ROOT/home/$USERNAME/.local/state/omarchy/current" "$ROOT/etc/skel/.local/state/omarchy/"
 	chown -R 0:0 "$ROOT/etc/skel/.local"
+	find "$ROOT/tmp" -mindepth 1 -delete   # omarchy-theme-set's lock file
 
 	if [ -f "$ROOT/etc/omarchy-phone-release" ]; then
 		sed -i '/^omarchy-core /d' "$ROOT/etc/omarchy-phone-release"
@@ -204,6 +213,13 @@ stage_check() {
 	ok "colors.toml has the keys Theme.qml reads"
 	n="$(as_user omarchy-theme-list | wc -l)"
 	[ "$n" -ge 20 ] && ok "omarchy-theme-list: $n themes" || bad "omarchy-theme-list: $n themes"
+	# Without the variables as_user sets: a login shell gets them from profile.d.
+	n="$(chroot --userspec="$uid:$gid" "$ROOT" /usr/bin/env -i HOME="/home/$USERNAME" PATH=/usr/local/bin:/usr/bin \
+		bash -lc omarchy-theme-list 2>/dev/null | wc -l)"
+	[ "$n" -ge 20 ] && ok "login shell env (profile.d): omarchy-theme-list works" || bad "login shell env: $n themes"
+	for f in environment environment.d/50-omarchy.conf; do
+		grep -q '^OMARCHY_PATH=/usr/share/omarchy$' "$ROOT/etc/$f" && ok "/etc/$f sets OMARCHY_PATH" || bad "/etc/$f"
+	done
 	[ "$(as_user omarchy-theme-current)" != Unknown ] && ok "omarchy-theme-current: $(as_user omarchy-theme-current)" || bad "omarchy-theme-current"
 	as_user omarchy theme list >/dev/null 2>&1 && ok "dispatcher: omarchy theme list" || bad "dispatcher: omarchy theme list"
 	as_user omarchy-version >/dev/null && ok "omarchy-version: $(as_user omarchy-version)" || bad "omarchy-version"
@@ -225,6 +241,7 @@ print(" ".join(v["label"] for k, v in m.children(items, "style")))' 2>&1)" \
 		&& ok "menu root: $(echo "$rows" | head -1); style: $(echo "$rows" | tail -1)" || bad "menu: $rows"
 	as_user fzf --version >/dev/null && ok "fzf $(as_user fzf --version | cut -d' ' -f1)" || bad "fzf does not run"
 	as_user jq --version >/dev/null && ok "$(as_user jq --version)" || bad "jq does not run"
+	find "$ROOT/tmp" -mindepth 1 -delete
 	grep -qF -- "$MARK" "$ROOT/home/$USERNAME/.config/hypr/hyprland.lua" && ok "hyprland.lua loads omarchy-core.lua" || bad "hyprland.lua hook"
 	umount_chroot
 	[ "$fail" = 0 ] || die "checks failed"
