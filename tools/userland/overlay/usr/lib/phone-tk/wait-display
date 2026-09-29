@@ -1,0 +1,10 @@
+#!/bin/sh
+# ExecStartPre of the omarchy-phone-session user unit: user units can't order
+# after seatd.service or wait on the DRM device, so poll for both (30 s).
+i=0
+while [ $i -lt 60 ]; do
+	[ -S /run/seatd.sock ] && [ -e "${AQ_DRM_DEVICES:-/dev/dri/card0}" ] && exit 0
+	sleep 0.5; i=$((i + 1))
+done
+echo "wait-display: no /run/seatd.sock or ${AQ_DRM_DEVICES:-/dev/dri/card0} after 30 s" >&2
+exit 1

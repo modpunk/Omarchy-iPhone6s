@@ -15,7 +15,7 @@ hl.config({
     blur = { enabled = false },
   },
   animations = { enabled = false },
-  misc = { force_default_wallpaper = 0, disable_hyprland_logo = true },
+  misc = { force_default_wallpaper = 0, disable_hyprland_logo = true, disable_hyprland_guiutils_check = true },
   xwayland = { enabled = false },
   cursor = { no_hardware_cursors = true },
   input = { kb_layout = "us" },

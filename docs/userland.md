@@ -42,8 +42,8 @@ contains the Broadcom BT firmware, your SSH public keys and the sshd host keys.
 
 | file | size | what |
 |---|---|---|
-| `rootfs.tar.xz` | 205 MiB (214,606,316 B) | the userland; md5 in `rootfs.tar.xz.md5`. Without the phone shell and app it was 147 MiB |
-| unpacked | 1099 MiB | in tmpfs on the phone (`SIZE=1400m` cap); 353 packages, list in `rootfs.packages.txt`. The phone shell and app added 311 MiB (was 788 MiB, 269 packages) |
+| `rootfs.tar.xz` | 205 MiB (214,798,688 B) | the userland; md5 in `rootfs.tar.xz.md5`. Without the phone shell and app it was 147 MiB |
+| unpacked | 1100 MiB | in tmpfs on the phone (`SIZE=1400m` cap); 353 packages, list in `rootfs.packages.txt`. The phone shell and app added 311 MiB (was 788 MiB, 269 packages) |
 | `initramfs-userland.gz` | 2.6 MiB | stock HoolockLinux ramdisk + patched `/init` + `userland-switch.sh` |
 | `check-report.txt` | | output of `check-rootfs.sh` (16K scan, missing libraries, smoke tests) |
 | `root/` | | the unpacked tree, owned by subuids (see "Rebuild") |
@@ -63,18 +63,21 @@ Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone 
    `kit/boot.sh` does the same thing as `~/Work/hoolock-iphone5s/boot.sh`, except that it also
    takes path overrides. That boot.sh hard-codes the stock initramfs. If you boot a different
    kernel build, add `KSRC=` (the tree with `arch/arm64/boot/Image.gz` and the dtbs).
-   Then bring up whatever the session normally loads (BT modules, firmware push, overlays).
-   Everything under `/lib/firmware` and every small file in `/tmp/6s` gets copied into the new
+   The image loads the phone's out-of-tree drivers itself (see "Brought up at boot"), so
+   nothing has to be insmodded in the ramdisk first. Anything you do push still carries over:
+   everything under `/lib/firmware` and every small file in `/tmp/6s` gets copied into the new
    root (`/usr/lib/firmware`, `/var/lib/6s-testkit/`), because `switch_root` deletes the ramdisk.
-2. **Set the clock** (the RTC reads 2021; the kernel clock survives the switch):
-   `~/Work/hoolock-iphone5s/testkit/phone.sh settime`
+2. **Clock:** `push-rootfs.sh` sets it from the laptop after unpacking (the RTC reads 2021; the
+   kernel clock survives the switch). `testkit/phone.sh settime` does the same by hand.
 3. **Push and unpack** (about 205 MB over NCM, then the phone's `unxz`; this took 45 s under
    qemu on the laptop):
    ```sh
    ~/Work/omarchy-iphone6s/tools/userland/push-rootfs.sh
    ```
-   It pushes `stage2.sh`, mounts `/newroot`, streams the tarball, then checks the tar exit code
-   and the stream md5. It prints `unpacked OK`.
+   It pushes `stage2.sh` and, if they exist, the Bluetooth address and pairing tarball (below),
+   mounts `/newroot`, streams the tarball, then checks the tar exit code and the stream md5. It
+   prints `unpacked OK`, runs `stage2.sh seed` (moves the Bluetooth files into
+   `/newroot/etc/omarchy-phone/`, root 0600) and sets the clock.
 4. **Hand over:**
    ```sh
    ~/Work/hoolock-iphone5s/testkit/phone.sh lock 'sh /tmp/6s/stage2.sh go'
@@ -96,17 +99,41 @@ Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone 
    ```
    The host key is the same on every build (`ssh-hostkeys/`). If ssh says the key for
    172.16.42.1 changed (an old entry from other tests), run `ssh-keygen -R 172.16.42.1`.
-7. **Hyprland + the phone shell** (start it over SSH; seatd hands out the seat):
+7. **Hyprland + the phone shell** start by themselves (`omarchy-phone-session` user unit; seatd
+   hands out the seat). To look at it or take over by hand:
    ```sh
+   ssh omarchy@172.16.42.1 'systemctl --user status omarchy-phone-session; tail -50 ~/.cache/hyprland.log; pgrep -a qs'
+   ssh omarchy@172.16.42.1 systemctl --user restart omarchy-phone-session
+   ssh omarchy@172.16.42.1 systemctl --user stop omarchy-phone-session    # then, by hand:
    ssh omarchy@172.16.42.1 phone-hyprland                  # log: ~/.cache/hyprland.log
-   ssh omarchy@172.16.42.1 'tail -50 ~/.cache/hyprland.log; pgrep -a qs'
-   ssh omarchy@172.16.42.1 pkill -x Hyprland               # stop (qs exits with it)
+   ssh omarchy@172.16.42.1 pkill -x Hyprland               # stop a hand-started one (qs exits with it)
    ssh omarchy@172.16.42.1 PHONE_PLAIN=1 phone-hyprland    # the old foot-only session instead
    ```
+   `phone-hyprland` refuses to start a second Hyprland while one is running.
    Screenshot (Hyprland's socket dir is the newest one under `/run/user/1000/hypr`):
    ```sh
    ssh omarchy@172.16.42.1 'WAYLAND_DISPLAY=wayland-1 grim /tmp/s.png' && scp omarchy@172.16.42.1:/tmp/s.png .
    ```
+
+### Brought up at boot
+
+What used to be typed after every boot is now in the image:
+
+| what | how | turn off / override |
+|---|---|---|
+| driver modules `gpio-apple-pmic` (BT power), `mux-sn2400`, then `bq27xxx_battery_hdq_uart` (battery gauge) | `build-rootfs.sh` installs them from `KBUILD` (default `~/Work/hoolock-iphone5s/build/integration`) into `/lib/modules/<release>/extra` with `modules.builtin*` and runs `depmod`; `/etc/modules-load.d/omarchy-phone.conf` loads them in that order, and `/etc/modprobe.d/omarchy-phone.conf` has `softdep bq27xxx_battery_hdq_uart pre: mux_sn2400` because udev can also autoload them from their OF aliases. The build fails if a `.ko` is missing or its vermagic isn't `KREL` (the kernel release of `KBUILD`, now `7.3.0-rc1-g6831bc701a6c`) | rebuild after a kernel change (`STAGES="config strip check pack"`) |
+| Bluetooth pairings | `omarchy-phone-bt-keys.service` (before `bluetooth.service`) unpacks `/etc/omarchy-phone/bt-keys.tgz` (members `bluetooth/...`) into `/var/lib` | no tarball, no restore |
+| Bluetooth public address | `omarchy-phone-bt-address.service` (after `bluetooth.service`) runs `/usr/lib/phone-tk/bt-address`: waits up to 60 s for `hci0` (hci_bcm probes once `gpio-apple-pmic` is in), then the sequence proven by hand, `bluetoothctl power off`, `btmgmt --index 0 public-addr <addr>`, `bluetoothctl power on`, and checks `btmgmt info`. It logs to the journal and never fails the boot | no `/etc/omarchy-phone/bt-address`, no change |
+| clock | `push-rootfs.sh`: `date -u -s @<laptop epoch>` in the ramdisk after unpacking | |
+| Hyprland | `misc = { disable_hyprland_guiutils_check = true }` in both session configs (hyprland-guiutils isn't installed) | |
+| phone session | `/etc/systemd/user/omarchy-phone-session.service`, enabled for `omarchy` only (`~/.config/systemd/user/default.target.wants/`; linger starts that user manager at boot). It waits up to 30 s for `/run/seatd.sock` and `/dev/dri/card0`, then runs `phone-hyprland --fg` (log `~/.cache/hyprland.log`), `Restart=on-failure` | `systemctl --user disable --now omarchy-phone-session` (as omarchy), or `touch ~/.config/omarchy-phone/no-autostart` |
+
+The Bluetooth address and pairing keys are per phone and stay out of git and out of the image
+(`check-rootfs.sh` checks that `/etc/omarchy-phone` and `/var/lib/bluetooth` are empty).
+`push-rootfs.sh` pushes them at deploy time from `BT_ADDR_FILE` (default
+`~/Work/hoolock-iphone5s/firmware/bt-bdaddr-omarchy.local`, one `XX:XX:XX:XX:XX:XX` line) and
+`BT_KEYS_TGZ` (default `~/Work/hoolock-iphone5s/firmware/bt-keys/var-lib-bluetooth.tgz`), without
+printing them. Missing files are skipped; `NO_BT_SEED=1` skips both.
 
 **No reboot yet?** `stage2.sh nsboot` is an **experimental** path for the stock ramdisk. It boots
 systemd as PID 1 of a new pid and mount namespace, the same way a container runs it. It stops
@@ -275,7 +302,7 @@ Known gaps and caveats:
 - **Lock screen:** the PIN pad checks the user's password through PAM, and the default password
   `omarchy` isn't numeric, so a lock (power key short press, `ophone-ctl lock`) can't be undone
   on the screen. Over SSH, restart the session (the shell starts unlocked):
-  `pkill -x Hyprland; phone-hyprland`, or build with a numeric `USERPASS=`.
+  `systemctl --user restart omarchy-phone-session`, or build with a numeric `USERPASS=`.
 - **Wi-Fi tile and status:** `Quickshell.Networking` and `ophone-sys wifi|airplane` use
   NetworkManager, which isn't installed (the image uses iwd, and there's no Wi-Fi driver yet).
 - `devices/iphone6s.lua` asks for `750x1334@60`, where the plain config used `preferred`.
@@ -348,6 +375,9 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/check-rootfs.sh` | laptop | 16K ELF/allocator scan, library resolution, qemu smoke tests |
 | `tools/userland/mk-initramfs.sh` | laptop | builds `initramfs-userland.gz` |
 | `tools/userland/test-switch-sim.sh` | laptop | PID 1 switch_root rehearsal with the ramdisk's own busybox |
-| `tools/userland/push-rootfs.sh` | laptop | stream + unpack + verify (`--go` to hand over and wait for ssh) |
-| `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `go`, `nsboot` |
+| `tools/userland/push-rootfs.sh` | laptop | push BT seed files, stream + unpack + verify, set the clock (`--go` to hand over and wait for ssh) |
+| `tools/userland/overlay/etc/modules-load.d/`, `modprobe.d/` | phone | driver load order and the gauge softdep |
+| `tools/userland/overlay/etc/systemd/system/omarchy-phone-bt-{keys,address}.service`, `overlay/usr/lib/phone-tk/bt-address` | phone | Bluetooth pairing restore and public address |
+| `tools/userland/overlay/etc/systemd/user/omarchy-phone-session.service`, `overlay/usr/lib/phone-tk/wait-display` | phone | starts the phone session at boot |
+| `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `go`, `nsboot` |
 | `tools/userland/phone/userland-switch.sh` | phone (PID 1) | sourced by the patched `/init` |

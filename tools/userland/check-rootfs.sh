@@ -148,6 +148,38 @@ if clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -fuse-ld=lld \
 else
 	echo "  (pagesize16k shim not built: needs host clang + lld)"
 fi
+# Phone driver modules (build-rootfs.sh stage_config_modules) and their load order.
+for d in "$ROOT"/usr/lib/modules/*/; do
+	krel="$(basename "$d")"; printf '  %-28s ' "modules $krel"
+	ok=yes
+	for m in gpio-apple-pmic mux-sn2400 bq27xxx_battery_hdq_uart; do
+		v="$(modinfo -F vermagic "$d/extra/$m.ko" 2>/dev/null | awk '{print $1}')"
+		[ "$v" = "$krel" ] || { ok="NO ($m vermagic '${v:-missing}')"; break; }
+		grep -q "^extra/$m.ko:" "$d/modules.dep" 2>/dev/null || { ok="NO ($m not in modules.dep)"; break; }
+	done
+	echo "$ok; load order: $(sed 's/#.*//' "$ROOT/etc/modules-load.d/omarchy-phone.conf" 2>/dev/null | awk NF | tr '\n' ' ')"
+done
+printf '  %-28s ' "modprobe softdep"
+chroot "$ROOT" /usr/bin/modprobe -c 2>/dev/null | grep -m1 '^softdep bq27xxx_battery_hdq_uart' || echo NO
+printf '  %-28s ' "boot units"
+ok=yes; for u in multi-user.target.wants/omarchy-phone-bt-address.service bluetooth.service.wants/omarchy-phone-bt-keys.service \
+	bluetooth.target.wants/bluetooth.service multi-user.target.wants/seatd.service; do
+	[ -L "$ROOT/etc/systemd/system/$u" ] || ok="NO ($u)"; done
+[ -L "$ROOT/home/omarchy/.config/systemd/user/default.target.wants/omarchy-phone-session.service" ] || ok="NO (omarchy-phone-session)"
+[ -e "$ROOT/etc/systemd/user/default.target.wants/omarchy-phone-session.service" ] && ok="NO (session enabled globally)"
+echo "$ok"
+printf '  %-28s ' "systemd-analyze verify"
+out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin SYSTEMD_LOG_LEVEL=warning /usr/bin/systemd-analyze verify --man=no \
+	/etc/systemd/system/omarchy-phone-bt-keys.service /etc/systemd/system/omarchy-phone-bt-address.service 2>&1 \
+	| grep -v -i 'dbus\|bus\b\|Failed to connect\|proc\|cgroup' | head -3 | tr '\n' ' ')"
+echo "${out:-ok}"
+printf '  %-28s ' "scripts sh -n"
+ok=yes; for f in /usr/lib/phone-tk/bt-address /usr/lib/phone-tk/wait-display /usr/local/bin/phone-hyprland; do
+	chroot "$ROOT" /usr/bin/sh -n "$f" 2>/dev/null || ok="NO ($f)"; [ -x "$ROOT$f" ] || ok="NO ($f not executable)"; done
+echo "$ok"
+printf '  %-28s ' "no BT secrets in image"
+[ -z "$(ls -A "$ROOT/etc/omarchy-phone" 2>/dev/null)" ] && [ -z "$(ls -A "$ROOT/var/lib/bluetooth" 2>/dev/null)" ] \
+	&& echo "ok (seeded at deploy)" || echo "NO: /etc/omarchy-phone or /var/lib/bluetooth not empty"
 printf '  %-28s ' "sshd -t (config test)"; chroot "$ROOT" /usr/bin/sshd -t && echo ok
 printf '  %-28s ' "mesa kms_swrast present"
 [ -e "$ROOT/usr/lib/dri/kms_swrast_dri.so" ] && [ -e "$ROOT/usr/lib/gbm/dri_gbm.so" ] && echo yes || echo NO

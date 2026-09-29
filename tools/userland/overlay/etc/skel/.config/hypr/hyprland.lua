@@ -15,6 +15,7 @@ dofile(shell .. "/hypr/hyprland.lua")
 hl.config({
   xwayland = { enabled = false },           -- Xwayland isn't installed
   cursor = { no_hardware_cursors = true },  -- simpledrm has no cursor plane
+  misc = { disable_hyprland_guiutils_check = true },  -- hyprland-guiutils isn't installed
 })
 hl.env("GSK_RENDERER", "cairo")      -- GTK4 apps: CPU renderer, cheaper than GL on llvmpipe
 hl.env("QS_ICON_THEME", "Adwaita")   -- app icons for the home grid (Yaru isn't in ALARM)
