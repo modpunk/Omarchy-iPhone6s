@@ -1,0 +1,101 @@
+From 54614484a1f562198672851b126552ebccfa6d62 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:23:59 -0500
+Subject: [PATCH 6/6] arm64: dts: apple: 6s: Enable spi2 and describe the
+ touchscreen
+
+Enable spi2 with its GPIO chip select on all 6s/6s Plus boards and add
+the N71 multitouch controller (ADT /arm-io/spi2/multi-touch): reset on
+GPIO 75, interrupt on GPIO 142, SPI mode 3 at 8 MHz as encoded in the
+ADT reg property. The touchscreen stays disabled until the analog
+supply and calibration hand-off are sorted out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ arch/arm64/boot/dts/apple/s8000-n71.dts  | 24 ++++++++++++++++++++++++
+ arch/arm64/boot/dts/apple/s8003-n71m.dts | 24 ++++++++++++++++++++++++
+ arch/arm64/boot/dts/apple/s800x-6s.dtsi  |  6 ++++++
+ 3 files changed, 54 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/apple/s8000-n71.dts b/arch/arm64/boot/dts/apple/s8000-n71.dts
+index f2964a1fc434..9a9a9b2cd6f1 100644
+--- a/arch/arm64/boot/dts/apple/s8000-n71.dts
++++ b/arch/arm64/boot/dts/apple/s8000-n71.dts
+@@ -13,3 +13,27 @@ / {
+ 	compatible = "apple,n71", "apple,s8000", "apple,arm-platform";
+ 	model = "Apple iPhone 6s (Samsung)";
+ };
++
++&spi2 {
++	touchscreen@0 {
++		compatible = "apple,n71-multitouch";
++		reg = <0>;
++		/* ADT multi-touch reg: 124 ns period, CPOL=1, CPHA=1, 8 bit */
++		spi-max-frequency = <8000000>;
++		spi-cpol;
++		spi-cpha;
++		reset-gpios = <&pinctrl_ap 75 GPIO_ACTIVE_LOW>;
++		interrupts-extended = <&pinctrl_ap 142 IRQ_TYPE_EDGE_FALLING>;
++		firmware-name = "apple/mtfw-n71.bin";
++		/* Raw controller units are not known yet; panel is 750x1334 */
++		touchscreen-size-x = <750>;
++		touchscreen-size-y = <1334>;
++		/*
++		 * Not enabled by default yet: the analog supply (Chestnut
++		 * display PMU LDO 2) has no Linux driver, and the
++		 * calibration blob (apple,z2-cal-blob, ADT
++		 * multi-touch-calibration) must be filled in by the loader.
++		 */
++		status = "disabled";
++	};
++};
+diff --git a/arch/arm64/boot/dts/apple/s8003-n71m.dts b/arch/arm64/boot/dts/apple/s8003-n71m.dts
+index 7ec6d2cda0bf..13e2d25ed272 100644
+--- a/arch/arm64/boot/dts/apple/s8003-n71m.dts
++++ b/arch/arm64/boot/dts/apple/s8003-n71m.dts
+@@ -13,3 +13,27 @@ / {
+ 	compatible = "apple,n71m", "apple,s8003", "apple,arm-platform";
+ 	model = "Apple iPhone 6s (TSMC)";
+ };
++
++&spi2 {
++	touchscreen@0 {
++		compatible = "apple,n71-multitouch";
++		reg = <0>;
++		/* ADT multi-touch reg: 124 ns period, CPOL=1, CPHA=1, 8 bit */
++		spi-max-frequency = <8000000>;
++		spi-cpol;
++		spi-cpha;
++		reset-gpios = <&pinctrl_ap 75 GPIO_ACTIVE_LOW>;
++		interrupts-extended = <&pinctrl_ap 142 IRQ_TYPE_EDGE_FALLING>;
++		firmware-name = "apple/mtfw-n71.bin";
++		/* Raw controller units are not known yet; panel is 750x1334 */
++		touchscreen-size-x = <750>;
++		touchscreen-size-y = <1334>;
++		/*
++		 * Not enabled by default yet: the analog supply (Chestnut
++		 * display PMU LDO 2) has no Linux driver, and the
++		 * calibration blob (apple,z2-cal-blob, ADT
++		 * multi-touch-calibration) must be filled in by the loader.
++		 */
++		status = "disabled";
++	};
++};
+diff --git a/arch/arm64/boot/dts/apple/s800x-6s.dtsi b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+index 1ac114eecd26..46db22c1e933 100644
+--- a/arch/arm64/boot/dts/apple/s800x-6s.dtsi
++++ b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+@@ -84,3 +84,9 @@ rtc_offset: rtc-offset@4 {
+ 		};
+ 	};
+ };
++
++&spi2 {
++	status = "okay";
++	/* ADT function-spi_cs0: GPIO chip select */
++	cs-gpios = <&pinctrl_ap 44 GPIO_ACTIVE_LOW>;
++};
+-- 
+2.55.0
+

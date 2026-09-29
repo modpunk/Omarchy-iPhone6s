@@ -1,0 +1,103 @@
+# Touch (iPhone 6s N71 multitouch on spi2)
+
+**Status:** partial. The SPI controller driver, DT and apple_z2 iPhone variant are written and
+build clean (W=1, dtbs). **Nothing has run on the phone yet.** The one overlay attempt hung
+because the kernel was already wedged by an unrelated overlay-remove oops, and phone tests were
+paused. The protocol is identified from iOS static analysis. No touch events have been seen.
+
+Patches: `patches/touch/` (6 patches, `git am` onto `6831bc701` on their own, checked).
+
+## What
+
+| item | value (source: IPSW ADT, runtime ADT, iOS 15.8.8 kernelcache) |
+|---|---|
+| controller | `/arm-io/spi2`, `spi-1,samsung`, `spi-version 1`, 0x20a088000, AIC 190, PMGR ps_spi2 (0x801c8) |
+| device | `/arm-io/spi2/multi-touch`, `multi-touch,n71,2`, iOS class `AppleMultitouchN1SPI` (kext `AppleMultitouchSPIN71`) |
+| pins | SCK/MOSI/MISO = GPIO 41-43 (periph 1, set by iBoot, read from the live pin registers). CS = GPIO 44 (`function-spi_cs0`) |
+| reset / irq | reset = GPIO 75 (active low, iBoot leaves it asserted: pin reg 0x72202). irq = GPIO 142 (`interrupt-parent` is the GPIO controller, not AIC) |
+| SPI mode | ADT reg `00000000 7c000000 01 03 01 08 ...`: 124 ns period (about 8 MHz), CPOL=1, CPHA=1, MSB first, 8 bit |
+| power | `function-power_ldo` = D2255 LDO index 0x19 ("ldo26", enable reg 0x319 bit0): **ON** (read 0x01 live). `function-power_ana` = Chestnut display PMU (i2c0 0x27) reg 0x05 bit4: **OFF** (read 0x0f live). `function-clock_enable` = PMGR `TCLK` 8/100/0x8000 (not decoded) |
+
+## SPI controller (A9 is not the M1 block)
+
+The iOS `AppleSamsungSPI` driver for spi-version 1 only ever touches registers 0x00-0x4c
+(CTRL, CFG, STATUS, PIN, TXDATA 0x10, RXDATA 0x20, CLKDIV 0x30, RXCNT 0x34, WORD_DELAY 0x38,
+TXCNT 0x4c). It reads the TX FIFO level from STATUS[10:6] and the RX level from STATUS[15:11],
+with a 16-entry FIFO. The version-1 constant table is {word-size shift 15, NCLK bit 0x4000,
+LSB-first bit 0x2000, depth 16}, and status is cleared with 0x0040000f. CFG also carries CPHA
+bit1, CPOL bit2, master+clock-enable 0x18, MODE bits 6:5 and the IRQ enables at bits 7-8.
+There is no FIFOSTAT/IE/IF/SHIFTCFG/PINCFG, so upstream `spi-apple.c` (M1) does not fit.
+This matches the HoolockLinux `tests/kat-spi` "S5L" experiment. That work was WIP; the bit-13
+meaning there is inverted compared with iOS.
+
+New driver `drivers/spi/spi-apple-s5l.c` (`apple,s8000-spi`, `apple,s5l-spi`): polled PIO,
+programmed in the same order as iOS. Runtime PM is deliberately off so SCK keeps its idle level.
+The ref clock is assumed to be clkref (24 MHz); iOS uses a PMGR "nclk" whose rate I could not
+find. The live probe measures the real SCK rate.
+
+DT: `spi1/spi2/spi3` nodes after the i2c nodes in `s800-0-3.dtsi` (disabled). spi2 is enabled
+in `s800x-6s.dtsi` with `cs-gpios`. The touchscreen node is in `s8000-n71.dts` and
+`s8003-n71m.dts`, left `disabled`. spi3 (Touch ID, `mesa`) and spi1 (codec) stay disabled and
+untouched.
+
+## Protocol: Z2 / HBPP (evidence)
+
+Evidence for Z2:
+- `AppleMultitouchSPIN71` personality: `Z2Compliant = true`, `mt-merge-personality C1F5B,2`,
+  `fw-execute-addr 0x10003400`, `cal-dl-addr 0x10009000`, `prox-cal-addr 0x10009600`,
+  `fll-mval 6099 @0x10003060`, `clk32-clock-enable 1 @0x10003518`, `ref-clk-div-val 2`,
+  `reset-deassert-delay 15`.
+- Rootfs `/usr/share/firmware/multitouch/N71.mtprops`: `PreconstructedBootloadPacketType = Z2`,
+  version `0x0670.mihu`, 2 constructed images (65460 and 18600 bytes). Each is a `18e1` NOP
+  word plus an HBPP DATA packet (`30 01 len/4 addr hdrsum payload sum32`). The extraction
+  script checks all header and payload checksums: image 0 goes to 0x0, image 1 to 0x401900.
+- Kext code (`MTSPIBootloader_Z2/_N1`, `AppleMultitouchZ2SPI`) uses the same packet ids as the
+  Asahi touch bar tooling:
+  - `1a a1` ATN
+  - `18 e1` NOP
+  - `30 01` DATA
+  - `1e 33` register write (addr, mask, value, sum)
+  - `1f 01` request calibration
+  - `1c 73` memory read
+  - `1d 53` EXECUTE
+  - acks `4bc1` (data) and `4ad1` (register)
+  - HBPP detect set {18e1, 1aa1, 1f01, 4879, 4969, 4ad1, 4bc1}
+  - after boot: wake `19 c1` and `ee ... 00ee`, the same framing as apple_z2's `EB` read
+- Differences from the touch bar: no boot IRQ is awaited. iOS order is:
+  1. dummy ATN+NOP transfer ("ensuring S_CLK is high")
+  2. deassert reset, wait 15 ms
+  3. HBPP check
+  4. calibration DATA
+  5. firmware images
+  6. N1 register sequence: read version @0x10008ffc; write fll, ref-clk-div, 0x10003058=6, const-cal @0x10003000 (2 if version==0x434d11a0, else 3), clk32
+  7. request calibration, wait 65 ms
+  8. EXECUTE, then 40 ms
+
+Evidence against or open: the post-boot report layout (touch bar parser reused) and the raw
+coordinate range are unverified. The analog rail is off.
+
+## Firmware and calibration (never committed)
+
+- `tools/touch/extract-n71-touch-fw.py N71.mtprops apple/mtfw-n71.bin` builds a Z2FW file:
+  SEND_CALIBRATION(0x10009000) plus 2 SEND_BLOBs, 84092 bytes. Push it to
+  `/lib/firmware/apple/` on the phone.
+- `tools/touch/adt-touch-cal.py <runtime-adt>` prints `apple,z2-cal-blob` from the runtime ADT
+  (`/dev/mtd1ro`, 1024 bytes, device unique). The IPSW ADT only has the syscfg placeholder.
+
+## Live-test plan (after reboot; nothing below has run yet)
+
+1. Confirm `ps_spi2` phandle 0xf039 (fnd_phandle). Load `tools/touch/live-test/ttpwr_v1.c`
+   (read-only rail report plus spi2 domain), then `tspis_v1` (the S5L driver).
+2. Apply `testkit/overlays/touch-spi2-v1.dtso` **once and never remove it**. It adds spi2 and a
+   `hoolock,z2probe-v1` child. Expect `S5L SPI controller, ref clock 24000000 Hz`.
+3. Load `tz2probe_v1`. It logs: irq level; 1 KiB timing (actual SCK); dummy transfer; reset
+   deassert plus irq edges; 3 HBPP checks (expect `IN HBPP`, words like `18e1/1aa1/...`);
+   ATN_ACK; read-only reads of 0x10008ffc (N1 version) and 0x10003800. Reset is re-asserted at
+   the end. A version value is the "controller is talking" proof.
+4. Only then: enable the Chestnut touch analog LDO (reg 0x05 |= 0x10, what iOS does). That is a
+   display-PMU write and needs the human or coordinator's OK. Next, bind `apple,n71-multitouch`
+   (new overlay child with the cal blob, firmware pushed) and run `evtest`.
+5. Human touch test: on `/dev/input/eventN` ("iPhone 6s Touchscreen"), touch and drag one
+   finger in each corner, then two fingers. Check that ABS_MT_POSITION_X/Y change, the range
+   and orientation (it may be inverted or scaled against 750x1334), and that BTN_TOUCH/slot
+   release on lift.

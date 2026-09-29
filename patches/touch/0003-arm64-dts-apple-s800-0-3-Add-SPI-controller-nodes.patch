@@ -1,0 +1,90 @@
+From 81a87867acd52f409dd88c794e0dfdc621e72ce4 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:23:42 -0500
+Subject: [PATCH 3/6] arm64: dts: apple: s800-0-3: Add SPI controller nodes
+
+Add spi1-spi3 (Apple "spi-1,samsung" at 0x20a084000/0x20a088000/
+0x20a08c000, AIC 189-191, PMGR ps_spi1-3) as disabled nodes. The PMGR
+index to power-state mapping was checked against the ADT pmgr devices
+table (SPI1-3 -> ps 0x18-0x1a -> 0x801c0-0x801d0).
+
+spi2 uses GPIO 41-43 in peripheral function 1, which is how iBoot leaves
+them; its chip select (GPIO 44) is a GPIO per ADT function-spi_cs0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ arch/arm64/boot/dts/apple/s800-0-3.dtsi | 50 +++++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/apple/s800-0-3.dtsi b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+index fc7dc7c5ba3a..0c1fd8526de5 100644
+--- a/arch/arm64/boot/dts/apple/s800-0-3.dtsi
++++ b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+@@ -131,6 +131,49 @@ i2c2: i2c@20a112000 {
+ 			status = "disabled";
+ 		};
+ 
++		/*
++		 * The SPI SCK/MOSI/MISO pins of spi1 and spi3 are left in the
++		 * function the bootloader programmed; only spi2 has verified
++		 * pins so far.
++		 */
++		spi1: spi@20a084000 {
++			compatible = "apple,s8000-spi", "apple,s5l-spi";
++			reg = <0x2 0x0a084000 0x0 0x4000>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 189 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&clkref>;
++			power-domains = <&ps_spi1>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		spi2: spi@20a088000 {
++			compatible = "apple,s8000-spi", "apple,s5l-spi";
++			reg = <0x2 0x0a088000 0x0 0x4000>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 190 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&clkref>;
++			pinctrl-0 = <&spi2_pins>;
++			pinctrl-names = "default";
++			power-domains = <&ps_spi2>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
++		spi3: spi@20a08c000 {
++			compatible = "apple,s8000-spi", "apple,s5l-spi";
++			reg = <0x2 0x0a08c000 0x0 0x4000>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 191 IRQ_TYPE_LEVEL_HIGH>;
++			clocks = <&clkref>;
++			power-domains = <&ps_spi3>;
++			#address-cells = <1>;
++			#size-cells = <0>;
++			status = "disabled";
++		};
++
+ 		bus@20c000000 {
+ 			compatible = "apple,s8000-usb-complex", "apple,s5l8960x-usb-complex", "simple-pm-bus";
+ 			#address-cells = <2>;
+@@ -251,6 +294,13 @@ i2c2_pins: i2c2-pins {
+ 				pinmux = <APPLE_PINMUX(23, 1)>,
+ 					 <APPLE_PINMUX(22, 1)>;
+ 			};
++
++			/* SCK/MOSI/MISO; chip select (pin 44) is a GPIO */
++			spi2_pins: spi2-pins {
++				pinmux = <APPLE_PINMUX(41, 1)>,
++					 <APPLE_PINMUX(42, 1)>,
++					 <APPLE_PINMUX(43, 1)>;
++			};
+ 		};
+ 
+ 		pinctrl_aop: pinctrl@2100f0000 {
+-- 
+2.55.0
+

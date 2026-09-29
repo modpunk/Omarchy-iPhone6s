@@ -1,0 +1,451 @@
+From 3f5830a73ba6e33718ff18bc468b4029b4008d49 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:23:59 -0500
+Subject: [PATCH 5/6] Input: apple_z2: Add iPhone 6s (HBPP bootloader) support
+
+iPhone Z2 controllers do not raise a boot interrupt. iOS instead parks
+SCK high with an ATN+NOP transfer while the part is in reset, releases
+reset, waits reset-deassert-delay and checks that the first two response
+words are HBPP status codes. After the data packets it checks each
+ATN_ACK (0x4bc1 for data, 0x4ad1 for register writes), reads the
+bootloader version at 0x10008ffc, programs the N1 clock/FLL registers,
+requests calibration (0x1f01), waits 65 ms and sends EXECUTE (0x1d53) to
+fw-execute-addr. All packet formats and constants come from the iOS 15
+AppleMultitouchSPI kext and the AppleMultitouchSPIN71 personality.
+
+Add a variant description carrying that sequence and use it for
+"apple,n71-multitouch". The touch bar code paths are unchanged. HBPP
+packets are sent as 8-bit transfers in wire order, exactly like iOS;
+firmware blobs keep the existing little endian 16-bit word layout of
+the Z2FW container and are byte swapped on the fly.
+
+Status: the bootloader handshake is modelled on iOS but has not yet
+been observed on hardware; touch report parsing is the unmodified
+touch bar parser.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ drivers/input/touchscreen/apple_z2.c | 339 +++++++++++++++++++++++++++
+ 1 file changed, 339 insertions(+)
+
+diff --git a/drivers/input/touchscreen/apple_z2.c b/drivers/input/touchscreen/apple_z2.c
+index 271ababf0ad5..edd53c043371 100644
+--- a/drivers/input/touchscreen/apple_z2.c
++++ b/drivers/input/touchscreen/apple_z2.c
+@@ -29,6 +29,45 @@
+ #define LOAD_COMMAND_SEND_CALIBRATION    2
+ #define CAL_PROP_NAME                    "apple,z2-cal-blob"
+ 
++/*
++ * iPhone controllers (iOS AppleMultitouchN1SPI, "Z2Compliant") come up in
++ * the HBPP bootloader and are driven without a boot interrupt. Every HBPP
++ * packet is a sequence of big endian 16-bit words; 32-bit values are sent
++ * low half first. The wire-level constants below were taken from iOS.
++ */
++#define APPLE_Z2_HBPP_NOP                0x18e1
++#define APPLE_Z2_HBPP_ATN                0x1aa1
++#define APPLE_Z2_HBPP_REQ_CAL            0x1f01
++#define APPLE_Z2_HBPP_MEM_READ           0x1c73
++#define APPLE_Z2_HBPP_REG_WRITE          0x1e33
++#define APPLE_Z2_HBPP_EXECUTE            0x1d53
++#define APPLE_Z2_HBPP_ACK_DATA           0x4bc1
++#define APPLE_Z2_HBPP_ACK_REG            0x4ad1
++#define APPLE_Z2_HBPP_PKT_LEN            16
++
++struct apple_z2_reg {
++	u32 addr;
++	u32 val;
++};
++
++struct apple_z2_variant {
++	/* Controller boots into HBPP and is handshaken instead of waiting for an IRQ */
++	bool hbpp;
++	unsigned int reset_delay_ms;
++	u32 version_addr;
++	/* Register writes done after the firmware image is downloaded */
++	const struct apple_z2_reg *regs;
++	unsigned int num_regs;
++	u32 const_cal_addr;
++	u32 const_cal_val;
++	u32 const_cal_alt_version;
++	u32 const_cal_alt_val;
++	const struct apple_z2_reg *post_regs;
++	unsigned int num_post_regs;
++	unsigned int calib_wait_ms;
++	u32 exec_addr;
++};
++
+ struct apple_z2 {
+ 	struct spi_device *spidev;
+ 	struct gpio_desc *reset_gpio;
+@@ -38,6 +77,7 @@ struct apple_z2 {
+ 	int index_parity;
+ 	struct touchscreen_properties props;
+ 	const char *fw_name;
++	const struct apple_z2_variant *variant;
+ 	u8 *tx_buf;
+ 	u8 *rx_buf;
+ };
+@@ -219,6 +259,235 @@ static const u8 *apple_z2_build_cal_blob(struct apple_z2 *z2,
+ 	return no_free_ptr(blob_data);
+ }
+ 
++static void apple_z2_put_hbpp32(u8 *p, u32 v)
++{
++	put_unaligned_be16(v & 0xffff, p);
++	put_unaligned_be16(v >> 16, p + 2);
++}
++
++static u16 apple_z2_sum8(const u8 *p, size_t len)
++{
++	u16 sum = 0;
++
++	while (len--)
++		sum += *p++;
++	return sum;
++}
++
++static int apple_z2_hbpp_xfer(struct apple_z2 *z2, const void *tx, void *rx,
++			      size_t len)
++{
++	struct spi_transfer xfer = {
++		.tx_buf = tx,
++		.rx_buf = rx,
++		.len = len,
++		.bits_per_word = 8,
++	};
++
++	return spi_sync_transfer(z2->spidev, &xfer, 1);
++}
++
++/* Send ATN and return the status word the bootloader answers with */
++static int apple_z2_hbpp_ack(struct apple_z2 *z2, u16 *status)
++{
++	int error;
++
++	put_unaligned_be16(APPLE_Z2_HBPP_ATN, z2->tx_buf);
++	error = apple_z2_hbpp_xfer(z2, z2->tx_buf, z2->rx_buf, 2);
++	if (!error)
++		*status = get_unaligned_be16(z2->rx_buf);
++	return error;
++}
++
++static bool apple_z2_is_hbpp_word(u16 w)
++{
++	switch (w) {
++	case APPLE_Z2_HBPP_NOP:
++	case APPLE_Z2_HBPP_ATN:
++	case APPLE_Z2_HBPP_REQ_CAL:
++	case 0x4879:
++	case 0x4969:
++	case APPLE_Z2_HBPP_ACK_REG:
++	case APPLE_Z2_HBPP_ACK_DATA:
++		return true;
++	default:
++		return false;
++	}
++}
++
++/* ATN followed by NOPs; used both to park SCK high and to detect HBPP */
++static int apple_z2_hbpp_probe(struct apple_z2 *z2, bool *in_hbpp)
++{
++	u8 *rx = z2->rx_buf;
++	int i, error;
++
++	put_unaligned_be16(APPLE_Z2_HBPP_ATN, z2->tx_buf);
++	for (i = 2; i < APPLE_Z2_HBPP_PKT_LEN; i += 2)
++		put_unaligned_be16(APPLE_Z2_HBPP_NOP, z2->tx_buf + i);
++
++	error = apple_z2_hbpp_xfer(z2, z2->tx_buf, rx, APPLE_Z2_HBPP_PKT_LEN);
++	if (error)
++		return error;
++
++	if (in_hbpp) {
++		*in_hbpp = apple_z2_is_hbpp_word(get_unaligned_be16(rx)) &&
++			   apple_z2_is_hbpp_word(get_unaligned_be16(rx + 2));
++		if (!*in_hbpp)
++			dev_err(&z2->spidev->dev, "no HBPP response: %*ph\n",
++				APPLE_Z2_HBPP_PKT_LEN, rx);
++	}
++	return 0;
++}
++
++static int apple_z2_hbpp_read_reg(struct apple_z2 *z2, u32 addr, u32 *val)
++{
++	u8 *rx = z2->rx_buf;
++	u8 *p = z2->tx_buf;
++	int error;
++
++	put_unaligned_be16(APPLE_Z2_HBPP_MEM_READ, p);
++	apple_z2_put_hbpp32(p + 2, addr);
++	put_unaligned_be16(apple_z2_sum8(p + 2, 4), p + 6);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, 8);
++	if (error)
++		return error;
++
++	/* Long ATN: the value comes back in words 1 and 2 */
++	put_unaligned_be16(APPLE_Z2_HBPP_ATN, p);
++	put_unaligned_be16(APPLE_Z2_HBPP_NOP, p + 2);
++	put_unaligned_be16(APPLE_Z2_HBPP_NOP, p + 4);
++	put_unaligned_be16(APPLE_Z2_HBPP_NOP, p + 6);
++	error = apple_z2_hbpp_xfer(z2, p, rx, 8);
++	if (error)
++		return error;
++
++	*val = get_unaligned_be16(rx + 2) | (get_unaligned_be16(rx + 4) << 16);
++	return 0;
++}
++
++static int apple_z2_hbpp_write_reg(struct apple_z2 *z2, u32 addr, u32 val)
++{
++	u8 *p = z2->tx_buf;
++	u16 status = 0;
++	int error;
++
++	put_unaligned_be16(APPLE_Z2_HBPP_REG_WRITE, p);
++	apple_z2_put_hbpp32(p + 2, addr);
++	apple_z2_put_hbpp32(p + 6, 0xffffffff);	/* mask */
++	apple_z2_put_hbpp32(p + 10, val);
++	put_unaligned_be16(apple_z2_sum8(p + 2, 12), p + 14);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, APPLE_Z2_HBPP_PKT_LEN);
++	if (error)
++		return error;
++
++	error = apple_z2_hbpp_ack(z2, &status);
++	if (error)
++		return error;
++	if (status != APPLE_Z2_HBPP_ACK_REG) {
++		dev_err(&z2->spidev->dev, "write 0x%08x to 0x%08x: ack 0x%04x\n",
++			val, addr, status);
++		return -EIO;
++	}
++	return 0;
++}
++
++/*
++ * Firmware blobs are stored as little endian 16-bit words (they are sent
++ * with 16-bit SPI words on the touch bar). HBPP controllers get the same
++ * bytes on the wire, but as a plain 8-bit transfer, like iOS does.
++ */
++static int apple_z2_hbpp_send_blob(struct apple_z2 *z2, const u8 *data,
++				   u32 size, bool init)
++{
++	u16 status = 0;
++	u8 *wire;
++	u32 i;
++	int error;
++
++	wire = kmalloc(size, GFP_KERNEL);
++	if (!wire)
++		return -ENOMEM;
++	if (init || size & 1) {
++		memcpy(wire, data, size);
++	} else {
++		for (i = 0; i < size; i += 2) {
++			wire[i] = data[i + 1];
++			wire[i + 1] = data[i];
++		}
++	}
++	error = apple_z2_hbpp_xfer(z2, wire, NULL, size);
++	kfree(wire);
++	if (error)
++		return error;
++
++	error = apple_z2_hbpp_ack(z2, &status);
++	if (error)
++		return error;
++	if (status != APPLE_Z2_HBPP_ACK_DATA) {
++		dev_err(&z2->spidev->dev, "blob of %u bytes: ack 0x%04x\n",
++			size, status);
++		return -EIO;
++	}
++	return 0;
++}
++
++/* Clock/FLL setup, calibration request and jump into the firmware */
++static int apple_z2_hbpp_start(struct apple_z2 *z2)
++{
++	const struct apple_z2_variant *v = z2->variant;
++	struct device *dev = &z2->spidev->dev;
++	u32 version = 0, const_cal;
++	u8 *p = z2->tx_buf;
++	u16 status = 0;
++	unsigned int i;
++	int error;
++
++	error = apple_z2_hbpp_read_reg(z2, v->version_addr, &version);
++	if (error)
++		return error;
++	dev_info(dev, "bootloader version 0x%08x\n", version);
++
++	for (i = 0; i < v->num_regs; i++) {
++		error = apple_z2_hbpp_write_reg(z2, v->regs[i].addr, v->regs[i].val);
++		if (error)
++			return error;
++	}
++
++	const_cal = version == v->const_cal_alt_version ?
++		    v->const_cal_alt_val : v->const_cal_val;
++	error = apple_z2_hbpp_write_reg(z2, v->const_cal_addr, const_cal);
++	if (error)
++		return error;
++
++	for (i = 0; i < v->num_post_regs; i++) {
++		error = apple_z2_hbpp_write_reg(z2, v->post_regs[i].addr,
++						v->post_regs[i].val);
++		if (error)
++			return error;
++	}
++
++	put_unaligned_be16(APPLE_Z2_HBPP_REQ_CAL, p);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, 2);
++	if (error)
++		return error;
++	msleep(v->calib_wait_ms);
++	error = apple_z2_hbpp_ack(z2, &status);
++	if (error)
++		return error;
++	dev_dbg(dev, "calibration done, status 0x%04x\n", status);
++
++	put_unaligned_be16(APPLE_Z2_HBPP_EXECUTE, p);
++	apple_z2_put_hbpp32(p + 2, v->exec_addr);
++	apple_z2_put_hbpp32(p + 6, 1);
++	put_unaligned_be16(apple_z2_sum8(p + 2, 8), p + 10);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, 12);
++	if (error)
++		return error;
++
++	msleep(40);
++	return 0;
++}
++
+ static int apple_z2_send_firmware_blob(struct apple_z2 *z2, const u8 *data,
+ 				       u32 size, bool init)
+ {
+@@ -226,6 +495,9 @@ static int apple_z2_send_firmware_blob(struct apple_z2 *z2, const u8 *data,
+ 	struct spi_transfer blob_xfer, ack_xfer;
+ 	int error;
+ 
++	if (z2->variant && z2->variant->hbpp)
++		return apple_z2_hbpp_send_blob(z2, data, size, init);
++
+ 	z2->tx_buf[0] = 0x1a;
+ 	z2->tx_buf[1] = 0xa1;
+ 
+@@ -323,16 +595,52 @@ static int apple_z2_upload_firmware(struct apple_z2 *z2)
+ 		fw_idx = round_up(fw_idx, 4);
+ 	}
+ 
++	if (z2->variant && z2->variant->hbpp) {
++		error = apple_z2_hbpp_start(z2);
++		if (error)
++			return error;
++		enable_irq(z2->spidev->irq);
++	}
+ 
+ 	z2->booted = true;
+ 	apple_z2_read_packet(z2);
+ 	return 0;
+ }
+ 
++static int apple_z2_boot_hbpp(struct apple_z2 *z2)
++{
++	bool in_hbpp = false;
++	int error;
++
++	/* Clock out ATN/NOPs while in reset so SCK idles high (mode 3) */
++	error = apple_z2_hbpp_probe(z2, NULL);
++	if (error)
++		return error;
++
++	gpiod_set_value(z2->reset_gpio, 0);
++	msleep(z2->variant->reset_delay_ms);
++
++	error = apple_z2_hbpp_probe(z2, &in_hbpp);
++	if (!error && !in_hbpp)
++		error = -ENODEV;
++	if (!error)
++		error = apple_z2_upload_firmware(z2);
++	if (error) {
++		if (z2->booted)
++			disable_irq(z2->spidev->irq);
++		z2->booted = false;
++		gpiod_set_value(z2->reset_gpio, 1);
++	}
++	return error;
++}
++
+ static int apple_z2_boot(struct apple_z2 *z2)
+ {
+ 	int error;
+ 
++	if (z2->variant && z2->variant->hbpp)
++		return apple_z2_boot_hbpp(z2);
++
+ 	reinit_completion(&z2->boot_irq);
+ 	enable_irq(z2->spidev->irq);
+ 	gpiod_set_value(z2->reset_gpio, 0);
+@@ -368,6 +676,7 @@ static int apple_z2_probe(struct spi_device *spi)
+ 		return -ENOMEM;
+ 
+ 	z2->spidev = spi;
++	z2->variant = device_get_match_data(dev);
+ 	init_completion(&z2->boot_irq);
+ 	spi_set_drvdata(spi, z2);
+ 
+@@ -448,9 +757,37 @@ static int apple_z2_resume(struct device *dev)
+ 
+ static DEFINE_SIMPLE_DEV_PM_OPS(apple_z2_pm, apple_z2_suspend, apple_z2_resume);
+ 
++/* Values from the iOS 15 AppleMultitouchSPIN71 personality and N1 bootloader */
++static const struct apple_z2_reg apple_z2_n71_regs[] = {
++	{ 0x10003060, 6099 },	/* fll-mval */
++	{ 0x1000305c, 2 },	/* ref-clk-div */
++	{ 0x10003058, 6 },
++};
++
++static const struct apple_z2_reg apple_z2_n71_post_regs[] = {
++	{ 0x10003518, 1 },	/* clk32-clock-enable */
++};
++
++static const struct apple_z2_variant apple_z2_n71 = {
++	.hbpp = true,
++	.reset_delay_ms = 15,
++	.version_addr = 0x10008ffc,
++	.regs = apple_z2_n71_regs,
++	.num_regs = ARRAY_SIZE(apple_z2_n71_regs),
++	.const_cal_addr = 0x10003000,
++	.const_cal_val = 3,
++	.const_cal_alt_version = 0x434d11a0,
++	.const_cal_alt_val = 2,
++	.post_regs = apple_z2_n71_post_regs,
++	.num_post_regs = ARRAY_SIZE(apple_z2_n71_post_regs),
++	.calib_wait_ms = 65,
++	.exec_addr = 0x10003400,
++};
++
+ static const struct of_device_id apple_z2_of_match[] = {
+ 	{ .compatible = "apple,j293-touchbar" },
+ 	{ .compatible = "apple,j493-touchbar" },
++	{ .compatible = "apple,n71-multitouch", .data = &apple_z2_n71 },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, apple_z2_of_match);
+@@ -458,6 +795,7 @@ MODULE_DEVICE_TABLE(of, apple_z2_of_match);
+ static struct spi_device_id apple_z2_of_id[] = {
+ 	{ .name = "j293-touchbar", .driver_data = (kernel_ulong_t)"MacBookPro17,1 Touch Bar" },
+ 	{ .name = "j493-touchbar", .driver_data = (kernel_ulong_t)"Mac14,7 Touch Bar" },
++	{ .name = "n71-multitouch", .driver_data = (kernel_ulong_t)"iPhone 6s Touchscreen" },
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(spi, apple_z2_of_id);
+@@ -478,4 +816,5 @@ module_spi_driver(apple_z2_driver);
+ 
+ MODULE_LICENSE("GPL");
+ MODULE_FIRMWARE("apple/dfrmtfw-*.bin");
++MODULE_FIRMWARE("apple/mtfw-*.bin");
+ MODULE_DESCRIPTION("Apple Z2 touchscreens driver");
+-- 
+2.55.0
+

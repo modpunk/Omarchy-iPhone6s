@@ -1,0 +1,402 @@
+From 756d23c7680de420dcb603728ccfee7fe5cae260 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:23:42 -0500
+Subject: [PATCH 2/6] spi: Add Apple A7-A11 (S5L-style) SPI controller driver
+
+The pre-M1 Apple SoCs carry an older SPI block than the one handled by
+spi-apple.c. The layout was taken from the iOS 15 AppleSamsungSPI driver
+for spi-version 1 (A9): it only touches CTRL/CFG/STATUS/PIN/TXDATA/
+RXDATA/CLKDIV/RXCNT/WORD_DELAY/TXCNT (0x00-0x4c), takes the TX FIFO
+level from STATUS[10:6] and the RX FIFO level from STATUS[15:11], uses a
+16 entry FIFO, programs the word size in CFG[16:15] and clears status
+with 0x0040000f. There is no FIFOSTAT/IE/IF/SHIFTCFG/PINCFG block.
+
+Only polled PIO is implemented, in the same register order iOS uses.
+Runtime PM is left off on purpose so the programmed SCK idle level stays
+put between transfers: the iPhone 6s touch controller samples SCK when
+it leaves reset.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ drivers/spi/Kconfig         |   9 +
+ drivers/spi/Makefile        |   1 +
+ drivers/spi/spi-apple-s5l.c | 334 ++++++++++++++++++++++++++++++++++++
+ 3 files changed, 344 insertions(+)
+ create mode 100644 drivers/spi/spi-apple-s5l.c
+
+diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
+index a0f37e2df716..f4ebd42cc214 100644
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -118,6 +118,15 @@ config SPI_AMLOGIC_SPISG
+ 	  communication controller), which is available on platforms such as
+ 	  Amlogic A4 SoCs.
+ 
++config SPI_APPLE_S5L
++	tristate "Apple A7-A11 (S5L-style) SPI controller driver"
++	depends on ARCH_APPLE || COMPILE_TEST
++	help
++	  This enables support for the older SPI controller revision found
++	  on Apple A7 to A11 SoCs ("spi-1,samsung", spi-version 1 in the
++	  Apple device tree), e.g. the iPhone 6s touchscreen bus.
++	  The M1 and later controller is handled by SPI_APPLE.
++
+ config SPI_APPLE
+ 	tristate "Apple SoC SPI Controller platform driver"
+ 	depends on ARCH_APPLE || COMPILE_TEST
+diff --git a/drivers/spi/Makefile b/drivers/spi/Makefile
+index a18814fbde93..c3bb2933f3de 100644
+--- a/drivers/spi/Makefile
++++ b/drivers/spi/Makefile
+@@ -24,6 +24,7 @@ obj-$(CONFIG_SPI_AMLOGIC_SPIFC_A1)	+= spi-amlogic-spifc-a1.o
+ obj-$(CONFIG_SPI_AMLOGIC_SPIFC_A4)	+= spi-amlogic-spifc-a4.o
+ obj-$(CONFIG_SPI_AMLOGIC_SPISG)		+= spi-amlogic-spisg.o
+ obj-$(CONFIG_SPI_APPLE)			+= spi-apple.o
++obj-$(CONFIG_SPI_APPLE_S5L)		+= spi-apple-s5l.o
+ obj-$(CONFIG_SPI_AR934X)		+= spi-ar934x.o
+ obj-$(CONFIG_SPI_ARMADA_3700)		+= spi-armada-3700.o
+ obj-$(CONFIG_SPI_ASPEED_SMC)		+= spi-aspeed-smc.o
+diff --git a/drivers/spi/spi-apple-s5l.c b/drivers/spi/spi-apple-s5l.c
+new file mode 100644
+index 000000000000..17b2e0f1716e
+--- /dev/null
++++ b/drivers/spi/spi-apple-s5l.c
+@@ -0,0 +1,334 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Apple S5L-style SPI controller driver (A7-A11 "spi-1,samsung", spi-version 1)
++ *
++ * The pre-M1 Apple SoCs carry an older revision of the SPI block than the
++ * one handled by spi-apple.c. The register window starts out the same
++ * (CTRL/CFG/STATUS/PIN/TXDATA/RXDATA/CLKDIV/RXCNT/WORD_DELAY/TXCNT), but the
++ * FIFO levels live in STATUS, the word size and the interrupt enables live
++ * in CFG, and there is no FIFOSTAT/IE/IF/SHIFTCFG/PINCFG block at 0x10c+.
++ *
++ * The layout below was taken from the iOS 15 AppleSamsungSPI driver for
++ * spi-version 1 (A9): it only ever touches offsets 0x00-0x4c, reads the TX
++ * FIFO level from STATUS[10:6], the RX FIFO level from STATUS[15:11], uses
++ * a 16 entry FIFO and clears status with 0x0040000f. This driver only does
++ * polled PIO, which is what iOS does for short transfers as well.
++ *
++ * Copyright The HoolockLinux Contributors
++ */
++
++#include <linux/bitfield.h>
++#include <linux/bits.h>
++#include <linux/clk.h>
++#include <linux/delay.h>
++#include <linux/io.h>
++#include <linux/iopoll.h>
++#include <linux/ktime.h>
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/spi/spi.h>
++
++#ifndef APPLE_S5L_SPI_DRV_NAME
++#define APPLE_S5L_SPI_DRV_NAME		"apple-s5l-spi"
++#endif
++
++#define S5L_SPI_CTRL			0x000
++#define S5L_SPI_CTRL_RUN		BIT(0)
++#define S5L_SPI_CTRL_TX_RESET		BIT(2)
++#define S5L_SPI_CTRL_RX_RESET		BIT(3)
++
++#define S5L_SPI_CFG			0x004
++#define S5L_SPI_CFG_CPHA		BIT(1)
++#define S5L_SPI_CFG_CPOL		BIT(2)
++#define S5L_SPI_CFG_MASTER		BIT(3)
++#define S5L_SPI_CFG_CLK_ENABLE		BIT(4)
++#define S5L_SPI_CFG_MODE		GENMASK(6, 5)
++#define S5L_SPI_CFG_MODE_POLLED		0
++#define S5L_SPI_CFG_MODE_IRQ		1
++#define S5L_SPI_CFG_IE_RXCOMPLETE	BIT(7)
++#define S5L_SPI_CFG_IE_TXRXTHRESH	BIT(8)
++#define S5L_SPI_CFG_LSB_FIRST		BIT(13)
++#define S5L_SPI_CFG_NCLK		BIT(14)
++#define S5L_SPI_CFG_WORD_SIZE		GENMASK(16, 15)
++#define S5L_SPI_CFG_WORD_SIZE_8B	0
++#define S5L_SPI_CFG_WORD_SIZE_16B	1
++#define S5L_SPI_CFG_WORD_SIZE_32B	2
++
++#define S5L_SPI_STATUS			0x008
++#define S5L_SPI_STATUS_TXLVL		GENMASK(10, 6)
++#define S5L_SPI_STATUS_RXLVL		GENMASK(15, 11)
++/* Write-1-to-clear event bits, as used by iOS for spi-version 1 */
++#define S5L_SPI_STATUS_CLEAR		(GENMASK(3, 0) | BIT(22))
++
++#define S5L_SPI_PIN			0x00c
++#define S5L_SPI_PIN_CS			BIT(1)
++
++#define S5L_SPI_TXDATA			0x010
++#define S5L_SPI_RXDATA			0x020
++#define S5L_SPI_CLKDIV			0x030
++#define S5L_SPI_CLKDIV_MAX		0x7ff
++#define S5L_SPI_RXCNT			0x034
++#define S5L_SPI_WORD_DELAY		0x038
++#define S5L_SPI_TXCNT			0x04c
++
++#define S5L_SPI_FIFO_DEPTH		16
++
++/* Idle value shifted out when the caller has no TX buffer (matches iOS). */
++#define S5L_SPI_DUMMY_WORD		0xffffffff
++
++struct apple_s5l_spi {
++	void __iomem *regs;
++	struct clk *clk;
++	struct device *dev;
++	u32 cfg;		/* CFG bits for the current message */
++};
++
++static inline void s5l_write(struct apple_s5l_spi *spi, u32 off, u32 val)
++{
++	writel_relaxed(val, spi->regs + off);
++}
++
++static inline u32 s5l_read(struct apple_s5l_spi *spi, u32 off)
++{
++	return readl_relaxed(spi->regs + off);
++}
++
++static u32 apple_s5l_spi_base_cfg(void)
++{
++	return S5L_SPI_CFG_NCLK | S5L_SPI_CFG_MASTER | S5L_SPI_CFG_CLK_ENABLE;
++}
++
++static void apple_s5l_spi_hw_init(struct apple_s5l_spi *spi)
++{
++	s5l_write(spi, S5L_SPI_CTRL, 0);
++	s5l_write(spi, S5L_SPI_PIN, S5L_SPI_PIN_CS);
++	s5l_write(spi, S5L_SPI_CFG, apple_s5l_spi_base_cfg());
++	s5l_write(spi, S5L_SPI_WORD_DELAY, 0);
++	s5l_write(spi, S5L_SPI_STATUS, S5L_SPI_STATUS_CLEAR);
++}
++
++static int apple_s5l_spi_prepare_message(struct spi_controller *ctlr,
++					 struct spi_message *msg)
++{
++	struct apple_s5l_spi *spi = spi_controller_get_devdata(ctlr);
++	struct spi_device *sdev = msg->spi;
++
++	spi->cfg = apple_s5l_spi_base_cfg();
++	if (sdev->mode & SPI_CPHA)
++		spi->cfg |= S5L_SPI_CFG_CPHA;
++	if (sdev->mode & SPI_CPOL)
++		spi->cfg |= S5L_SPI_CFG_CPOL;
++	if (sdev->mode & SPI_LSB_FIRST)
++		spi->cfg |= S5L_SPI_CFG_LSB_FIRST;
++
++	/* Latch the clock polarity now so SCK idles correctly before CS. */
++	s5l_write(spi, S5L_SPI_CFG, spi->cfg);
++
++	return 0;
++}
++
++static void apple_s5l_spi_set_cs(struct spi_device *sdev, bool high)
++{
++	struct apple_s5l_spi *spi = spi_controller_get_devdata(sdev->controller);
++	u32 pin = s5l_read(spi, S5L_SPI_PIN);
++
++	if (high)
++		pin |= S5L_SPI_PIN_CS;
++	else
++		pin &= ~S5L_SPI_PIN_CS;
++	s5l_write(spi, S5L_SPI_PIN, pin);
++}
++
++static u32 apple_s5l_spi_get_tx(const void *buf, unsigned int idx,
++				unsigned int bpw_bytes)
++{
++	if (!buf)
++		return S5L_SPI_DUMMY_WORD;
++
++	switch (bpw_bytes) {
++	case 1:
++		return ((const u8 *)buf)[idx];
++	case 2:
++		return ((const u16 *)buf)[idx];
++	default:
++		return ((const u32 *)buf)[idx];
++	}
++}
++
++static void apple_s5l_spi_put_rx(void *buf, unsigned int idx,
++				 unsigned int bpw_bytes, u32 val)
++{
++	if (!buf)
++		return;
++
++	switch (bpw_bytes) {
++	case 1:
++		((u8 *)buf)[idx] = val;
++		break;
++	case 2:
++		((u16 *)buf)[idx] = val;
++		break;
++	default:
++		((u32 *)buf)[idx] = val;
++		break;
++	}
++}
++
++static int apple_s5l_spi_transfer_one(struct spi_controller *ctlr,
++				      struct spi_device *sdev,
++				      struct spi_transfer *t)
++{
++	struct apple_s5l_spi *spi = spi_controller_get_devdata(ctlr);
++	unsigned int bpw_bytes, words, tx_done = 0, rx_done = 0;
++	unsigned long rate = clk_get_rate(spi->clk);
++	u32 cfg, div, ws;
++	ktime_t deadline;
++	u64 timeout_us;
++	int ret = 0;
++
++	if (t->bits_per_word > 16) {
++		bpw_bytes = 4;
++		ws = S5L_SPI_CFG_WORD_SIZE_32B;
++	} else if (t->bits_per_word > 8) {
++		bpw_bytes = 2;
++		ws = S5L_SPI_CFG_WORD_SIZE_16B;
++	} else {
++		bpw_bytes = 1;
++		ws = S5L_SPI_CFG_WORD_SIZE_8B;
++	}
++	words = t->len / bpw_bytes;
++	if (!words)
++		return 0;
++
++	div = DIV_ROUND_UP(rate, t->speed_hz);
++	div = clamp_t(u32, div, 2, S5L_SPI_CLKDIV_MAX);
++
++	/* Generous timeout: 4x the wire time plus 100ms slack. */
++	timeout_us = div_u64((u64)words * bpw_bytes * 8 * div * USEC_PER_SEC, rate);
++	timeout_us = timeout_us * 4 + 100 * USEC_PER_MSEC;
++
++	cfg = spi->cfg | FIELD_PREP(S5L_SPI_CFG_WORD_SIZE, ws);
++
++	/* Same programming order as iOS: counts, clock, status, cfg, run */
++	s5l_write(spi, S5L_SPI_RXCNT, words);
++	s5l_write(spi, S5L_SPI_TXCNT, words);
++	s5l_write(spi, S5L_SPI_CLKDIV, div);
++	s5l_write(spi, S5L_SPI_WORD_DELAY, 0);
++	s5l_write(spi, S5L_SPI_STATUS, S5L_SPI_STATUS_CLEAR);
++	s5l_write(spi, S5L_SPI_CFG, cfg);
++	s5l_write(spi, S5L_SPI_CTRL, S5L_SPI_CTRL_RUN | S5L_SPI_CTRL_TX_RESET |
++				     S5L_SPI_CTRL_RX_RESET);
++	s5l_write(spi, S5L_SPI_CFG,
++		  cfg | FIELD_PREP(S5L_SPI_CFG_MODE, S5L_SPI_CFG_MODE_IRQ));
++
++	deadline = ktime_add_us(ktime_get(), timeout_us);
++	while (rx_done < words) {
++		u32 status = s5l_read(spi, S5L_SPI_STATUS);
++		unsigned int lvl, room;
++
++		s5l_write(spi, S5L_SPI_STATUS, status & S5L_SPI_STATUS_CLEAR);
++
++		lvl = FIELD_GET(S5L_SPI_STATUS_RXLVL, status);
++		while (lvl-- && rx_done < words) {
++			u32 v = s5l_read(spi, S5L_SPI_RXDATA);
++
++			apple_s5l_spi_put_rx(t->rx_buf, rx_done++, bpw_bytes, v);
++		}
++
++		lvl = FIELD_GET(S5L_SPI_STATUS_TXLVL, status);
++		room = lvl < S5L_SPI_FIFO_DEPTH ? S5L_SPI_FIFO_DEPTH - lvl : 0;
++		/* Never run more than a FIFO's worth ahead of the RX side. */
++		while (room-- && tx_done < words &&
++		       tx_done - rx_done < S5L_SPI_FIFO_DEPTH)
++			s5l_write(spi, S5L_SPI_TXDATA,
++				  apple_s5l_spi_get_tx(t->tx_buf, tx_done++,
++						       bpw_bytes));
++
++		if (ktime_after(ktime_get(), deadline)) {
++			dev_err(spi->dev,
++				"timeout: %u/%u tx %u/%u rx, status 0x%08x\n",
++				tx_done, words, rx_done, words, status);
++			ret = -ETIMEDOUT;
++			break;
++		}
++		cpu_relax();
++	}
++
++	s5l_write(spi, S5L_SPI_CFG, cfg);
++	s5l_write(spi, S5L_SPI_STATUS, S5L_SPI_STATUS_CLEAR);
++	s5l_write(spi, S5L_SPI_CTRL, 0);
++
++	return ret;
++}
++
++static int apple_s5l_spi_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct spi_controller *ctlr;
++	struct apple_s5l_spi *spi;
++	int ret;
++
++	ctlr = devm_spi_alloc_host(dev, sizeof(*spi));
++	if (!ctlr)
++		return -ENOMEM;
++
++	spi = spi_controller_get_devdata(ctlr);
++	spi->dev = dev;
++
++	spi->regs = devm_platform_ioremap_resource(pdev, 0);
++	if (IS_ERR(spi->regs))
++		return PTR_ERR(spi->regs);
++
++	spi->clk = devm_clk_get_enabled(dev, NULL);
++	if (IS_ERR(spi->clk))
++		return dev_err_probe(dev, PTR_ERR(spi->clk),
++				     "unable to get bus clock\n");
++	if (!clk_get_rate(spi->clk))
++		return dev_err_probe(dev, -EINVAL, "bus clock has no rate\n");
++
++	/*
++	 * No runtime PM on purpose: the power domain stays up while the
++	 * controller is bound, so the programmed SCK idle level (CPOL) is kept
++	 * between transfers. Some peripherals sample SCK when leaving reset.
++	 */
++	apple_s5l_spi_hw_init(spi);
++	spi->cfg = apple_s5l_spi_base_cfg();
++
++	ctlr->dev.of_node = dev->of_node;
++	ctlr->bus_num = pdev->id;
++	ctlr->num_chipselect = 1;
++	ctlr->mode_bits = SPI_CPHA | SPI_CPOL | SPI_LSB_FIRST;
++	ctlr->bits_per_word_mask = SPI_BPW_MASK(8) | SPI_BPW_MASK(16) |
++				   SPI_BPW_MASK(32);
++	ctlr->prepare_message = apple_s5l_spi_prepare_message;
++	ctlr->set_cs = apple_s5l_spi_set_cs;
++	ctlr->transfer_one = apple_s5l_spi_transfer_one;
++	ctlr->use_gpio_descriptors = true;
++
++	ret = devm_spi_register_controller(dev, ctlr);
++	if (ret)
++		return dev_err_probe(dev, ret, "unable to register controller\n");
++
++	dev_info(dev, "S5L SPI controller, ref clock %lu Hz\n",
++		 clk_get_rate(spi->clk));
++	return 0;
++}
++
++static const struct of_device_id apple_s5l_spi_of_match[] = {
++	{ .compatible = "apple,s5l-spi" },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, apple_s5l_spi_of_match);
++
++static struct platform_driver apple_s5l_spi_driver = {
++	.probe = apple_s5l_spi_probe,
++	.driver = {
++		.name = APPLE_S5L_SPI_DRV_NAME,
++		.of_match_table = apple_s5l_spi_of_match,
++	},
++};
++module_platform_driver(apple_s5l_spi_driver);
++
++MODULE_DESCRIPTION("Apple S5L-style (A7-A11) SPI controller driver");
++MODULE_LICENSE("GPL");
+-- 
+2.55.0
+

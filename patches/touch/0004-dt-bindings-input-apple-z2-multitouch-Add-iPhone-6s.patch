@@ -1,0 +1,30 @@
+From a3ab37912eec7f74434cea21b1da05f06dd44960 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:23:59 -0500
+Subject: [PATCH 4/6] dt-bindings: input: apple,z2-multitouch: Add iPhone 6s
+
+The iPhone 6s multitouch controller (iOS AppleMultitouchN1SPI, marked
+Z2Compliant in its IOKit personality) speaks the same Z2/HBPP protocol
+as the Touch Bar controllers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ .../bindings/input/touchscreen/apple,z2-multitouch.yaml          | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml b/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml
+index 44158e89e818..3b4cf2d5de40 100644
+--- a/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml
++++ b/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml
+@@ -20,6 +20,7 @@ properties:
+     enum:
+       - apple,j293-touchbar
+       - apple,j493-touchbar
++      - apple,n71-multitouch
+ 
+   interrupts:
+     maxItems: 1
+-- 
+2.55.0
+
