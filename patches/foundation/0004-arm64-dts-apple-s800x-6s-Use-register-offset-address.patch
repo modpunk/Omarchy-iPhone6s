@@ -1,0 +1,57 @@
+From 460371ca1f07e7bd1bd20349e9a156ed5ce13d69 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:10:28 -0500
+Subject: [PATCH 4/5] arm64: dts: apple: s800x-6s: Use register-offset
+ addressing for PMIC
+
+The PMIC subdevices sit behind i2c0 and cannot be translated to CPU
+addresses. With #size-cells = <1> the OF core tried anyway and printed
+"OF: Bad cell count for /soc/i2c@20a110000/pmic@74" five times at boot
+(two per child from of_device_alloc()/of_device_make_bus_id() and one
+from the nvmem layout device name).
+
+Switch the PMIC to #size-cells = <0>, give the RTC and nvmem nodes a
+single-cell reg and move the nvmem length into "size".
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/apple/s800x-6s.dtsi | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/apple/s800x-6s.dtsi b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+index 1ac114eecd26..c22bf4b79e47 100644
+--- a/arch/arm64/boot/dts/apple/s800x-6s.dtsi
++++ b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+@@ -58,19 +58,25 @@ &i2c0 {
+ 	pmic@74 {
+ 		compatible = "apple,antigua-pmic", "apple,i2c-pmic";
+ 		reg = <0x74>;
++		/*
++		 * Children are addressed by PMIC register offset, which cannot be
++		 * translated through the I2C bus: no size cells, so the OF core
++		 * does not try (and fail loudly with "Bad cell count").
++		 */
+ 		#address-cells = <1>;
+-		#size-cells = <1>;
++		#size-cells = <0>;
+ 
+ 		rtc@500 {
+ 			compatible = "apple,antigua-pmic-rtc";
+-			reg = <0x500 0x10>;
++			reg = <0x500>;
+ 			nvmem-cells = <&rtc_offset>;
+ 			nvmem-cell-names = "rtc_offset";
+ 		};
+ 
+ 		nvmem@5000 {
+ 			compatible = "apple,pmic-nvmem";
+-			reg = <0x5000 0x28>;
++			reg = <0x5000>;
++			size = <0x28>;
+ 
+ 			nvmem-layout {
+ 				compatible = "fixed-layout";
+-- 
+2.55.0
+

@@ -1,0 +1,56 @@
+From b56a56eb68788f659ffa835eb5bd6caf43055a2d Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:17:42 -0500
+Subject: [PATCH 2/5] dt-bindings: mfd: apple,pmic: Allow subdevices without
+ size cells
+
+Apple PMIC subdevices are addressed by register offset on an I2C or
+SPMI bus, which the OF core cannot translate to CPU addresses. With
+#size-cells = <1> it tries anyway and reports "Bad cell count" for each
+subdevice. Allow #size-cells = <0> and document a "size" property for
+the nvmem subdevice, which then carries only its base in reg.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Documentation/devicetree/bindings/mfd/apple,pmic.yaml       | 6 +++++-
+ .../devicetree/bindings/nvmem/apple,pmic-nvmem.yaml         | 6 ++++++
+ 2 files changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/mfd/apple,pmic.yaml b/Documentation/devicetree/bindings/mfd/apple,pmic.yaml
+index 8bf64a835559..8b2d325bc641 100644
+--- a/Documentation/devicetree/bindings/mfd/apple,pmic.yaml
++++ b/Documentation/devicetree/bindings/mfd/apple,pmic.yaml
+@@ -52,7 +52,11 @@ properties:
+     const: 1
+ 
+   "#size-cells":
+-    const: 1
++    description:
++      Use 0 so that subdevices are addressed by register offset only. With 1,
++      the OF core tries to translate the subdevice registers through the
++      I2C/SPMI bus, which cannot be done and is reported as an error.
++    enum: [0, 1]
+ 
+ patternProperties:
+   "^backlight(@[0-9a-f]+)?$":
+diff --git a/Documentation/devicetree/bindings/nvmem/apple,pmic-nvmem.yaml b/Documentation/devicetree/bindings/nvmem/apple,pmic-nvmem.yaml
+index b184c10ed087..77d7822d74e8 100644
+--- a/Documentation/devicetree/bindings/nvmem/apple,pmic-nvmem.yaml
++++ b/Documentation/devicetree/bindings/nvmem/apple,pmic-nvmem.yaml
+@@ -29,6 +29,12 @@ properties:
+   reg:
+     maxItems: 1
+ 
++  size:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description:
++      Size of the region in bytes. Required when the parent PMIC uses
++      '#size-cells = <0>', where reg only carries the base register.
++
+ required:
+   - compatible
+   - reg
+-- 
+2.55.0
+

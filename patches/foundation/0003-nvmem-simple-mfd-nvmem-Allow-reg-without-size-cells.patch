@@ -1,0 +1,70 @@
+From b6329b7070138eeaae83493a17e0ec74d53a4866 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:17:43 -0500
+Subject: [PATCH 3/5] nvmem: simple-mfd-nvmem: Allow reg without size cells
+
+Apple PMIC subdevices are addressed by 16-bit register offset on an I2C
+or SPMI bus. Describing them with #size-cells = <1> makes
+of_platform_populate() try to translate that offset into a CPU address,
+which fails at the bus (#size-cells = <0>) and logs "OF: Bad cell count"
+for every child and nvmem layout (five times on the iPhone 6s).
+
+Let the parent PMIC use #size-cells = <0> instead, as other MFDs on
+non-MMIO buses do, and take the nvmem region size from a "size"
+property in that case (like at24's). The existing <base size> form keeps
+working, so the other Apple PMIC device trees are unaffected.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/nvmem/simple-mfd-nvmem.c | 25 +++++++++++++++++++++----
+ 1 file changed, 21 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/nvmem/simple-mfd-nvmem.c b/drivers/nvmem/simple-mfd-nvmem.c
+index 2ae862185b01..0f3d3ba870de 100644
+--- a/drivers/nvmem/simple-mfd-nvmem.c
++++ b/drivers/nvmem/simple-mfd-nvmem.c
+@@ -61,19 +61,36 @@ static int simple_mfd_nvmem_probe(struct platform_device *pdev)
+ 		return -ENXIO;
+ 	}
+ 
++	/*
++	 * The region is either described as reg = <base size> (parent with
++	 * #size-cells = <1>), or as reg = <base> plus a "size" property when
++	 * the parent uses #size-cells = <0>. The latter keeps the OF core from
++	 * trying to translate the register offset into a CPU address through
++	 * the I2C/SPMI bus above, which it cannot do.
++	 */
+ 	addr = of_get_property(pdev->dev.of_node, "reg", &len);
+ 	if (!addr) {
+ 		dev_err(&pdev->dev, "No reg property\n");
+ 		return -EINVAL;
+ 	}
+-	if (len != 2 * sizeof(u32)) {
++
++	nvmem->base = be32_to_cpup(&addr[0]);
++
++	if (len == 2 * sizeof(u32)) {
++		nvmem_cfg.size = be32_to_cpup(&addr[1]);
++	} else if (len == sizeof(u32)) {
++		u32 size;
++
++		if (of_property_read_u32(pdev->dev.of_node, "size", &size) || !size) {
++			dev_err(&pdev->dev, "Missing size property\n");
++			return -EINVAL;
++		}
++		nvmem_cfg.size = size;
++	} else {
+ 		dev_err(&pdev->dev, "Invalid reg property\n");
+ 		return -EINVAL;
+ 	}
+ 
+-	nvmem->base = be32_to_cpup(&addr[0]);
+-	nvmem_cfg.size = be32_to_cpup(&addr[1]);
+-
+ 	return PTR_ERR_OR_ZERO(devm_nvmem_register(&pdev->dev, &nvmem_cfg));
+ }
+ 
+-- 
+2.55.0
+
