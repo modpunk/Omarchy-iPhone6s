@@ -1,0 +1,458 @@
+From 178672f8bf331d1c8e0bf742b87ce6bf50989d69 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:17:58 -0500
+Subject: [PATCH 4/5] power: supply: bq27xxx: Add HDQ over UART transport
+
+Apple iPhones connect the bq27540 fuel gauge's HDQ line to both pins of a
+Samsung-style UART and bit-bang HDQ one UART character per bit. Add a
+serdev transport for the bq27xxx core that does the same:
+
+  57600 baud, 8 data bits, 11-bit frames (191 us >= t_CYCH)
+  host 1 = 0xff (17 us low), host 0 = 0xc0 (121 us low)
+  break = UART break for >= 200 us, then >= 40 us recovery
+  a received character >= 0xf9 is a short pulse, i.e. a 1
+
+These are the values iOS uses (AppleHDQGasGaugeControl), except that iOS
+selects two stop bits and sends 0xfe for a 1; serdev cannot select two
+stop bits, so odd parity supplies the eleventh bit and 0xff keeps it high.
+Every character is echoed back on the shared line and checked.
+
+The existing w1-based bq27xxx_battery_hdq driver is not usable here: it
+hardcodes the bq27000 register map and needs a 1-Wire master with ROM
+search, neither of which fits a bq27540 on a UART. Only reads are
+implemented, so the gauge is never written.
+
+An optional mux-state claims the line from another HDQ master (the
+iPhone's charger) for each register read.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ drivers/power/supply/Kconfig                  |  14 +
+ drivers/power/supply/Makefile                 |   1 +
+ .../power/supply/bq27xxx_battery_hdq_uart.c   | 376 ++++++++++++++++++
+ 3 files changed, 391 insertions(+)
+ create mode 100644 drivers/power/supply/bq27xxx_battery_hdq_uart.c
+
+diff --git a/drivers/power/supply/Kconfig b/drivers/power/supply/Kconfig
+index b89ef40df7f8..ec884578332d 100644
+--- a/drivers/power/supply/Kconfig
++++ b/drivers/power/supply/Kconfig
+@@ -334,6 +334,20 @@ config BATTERY_BQ27XXX_HDQ
+ 	  Say Y here to enable support for batteries with BQ27xxx chips
+ 	  connected over an HDQ bus.
+ 
++config BATTERY_BQ27XXX_HDQ_UART
++	tristate "BQ27xxx HDQ over UART support"
++	depends on BATTERY_BQ27XXX
++	depends on SERIAL_DEV_BUS
++	help
++	  Say Y here to enable support for batteries with BQ27xxx chips
++	  whose HDQ line is wired to both pins of a UART, as found in
++	  Apple iPhones. If the line is shared with another HDQ master
++	  through a switch, enable the multiplexer driver for that switch
++	  too (e.g. MUX_SN2400).
++
++	  To compile the driver as a module, choose M here: the module will
++	  be called bq27xxx_battery_hdq_uart.
++
+ config BATTERY_BQ27XXX_DT_UPDATES_NVM
+ 	bool "BQ27xxx support for update of NVM/flash data memory"
+ 	depends on BATTERY_BQ27XXX_I2C
+diff --git a/drivers/power/supply/Makefile b/drivers/power/supply/Makefile
+index f3c0d1006c1a..a3ad345c72f5 100644
+--- a/drivers/power/supply/Makefile
++++ b/drivers/power/supply/Makefile
+@@ -52,6 +52,7 @@ obj-$(CONFIG_MANAGER_SBS)	+= sbs-manager.o
+ obj-$(CONFIG_BATTERY_BQ27XXX)	+= bq27xxx_battery.o
+ obj-$(CONFIG_BATTERY_BQ27XXX_I2C) += bq27xxx_battery_i2c.o
+ obj-$(CONFIG_BATTERY_BQ27XXX_HDQ) += bq27xxx_battery_hdq.o
++obj-$(CONFIG_BATTERY_BQ27XXX_HDQ_UART) += bq27xxx_battery_hdq_uart.o
+ obj-$(CONFIG_BATTERY_DA9030)	+= da9030_battery.o
+ obj-$(CONFIG_BATTERY_DA9052)	+= da9052-battery.o
+ obj-$(CONFIG_CHARGER_DA9150)	+= da9150-charger.o
+diff --git a/drivers/power/supply/bq27xxx_battery_hdq_uart.c b/drivers/power/supply/bq27xxx_battery_hdq_uart.c
+new file mode 100644
+index 000000000000..e150865b5f52
+--- /dev/null
++++ b/drivers/power/supply/bq27xxx_battery_hdq_uart.c
+@@ -0,0 +1,376 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * BQ27xxx battery monitor, HDQ transport over a UART (serdev)
++ *
++ * Some boards (e.g. Apple iPhone 6s) wire the single HDQ line of a TI
++ * bq27xxx fuel gauge to both the TX and RX pins of an ordinary UART. HDQ is
++ * then bit-banged with one UART character per HDQ bit:
++ *
++ *  - 57600 baud, 8 data bits, 11-bit frames (191 us, >= t_CYCH 190 us).
++ *    The eleventh bit is an odd parity bit instead of a second stop bit
++ *    because serdev cannot select two stop bits; for the two host
++ *    characters used below the parity bit is always 1, so on the wire the
++ *    frame is identical to 8N2.
++ *  - host "1" = 0xff: only the start bit is low, 17 us   (t_HW1 0.5..50 us)
++ *  - host "0" = 0xc0: start + 6 data bits low, 121 us    (t_HW0 86..145 us)
++ *  - break    = UART break condition for >= 200 us       (t_B >= 190 us),
++ *    followed by >= 40 us of recovery                    (t_BR)
++ *  - The gauge's response bits arrive as UART characters too: a short low
++ *    pulse ("1", t_DW1 32..50 us) reads back as 0xfe/0xfc, a long one
++ *    ("0", t_DW0 80..145 us) as 0xf0 or less.
++ *
++ * Because TX and RX share the line, every character sent is echoed back and
++ * is checked, which catches line contention and framing trouble.
++ *
++ * The line may be switched between the host and another HDQ master (on the
++ * iPhone the charger talks to the gauge too); such a switch is described as
++ * a mux state and is selected for the duration of each register read.
++ *
++ * Only reads are implemented: the gauge is never written to.
++ *
++ * Copyright (C) 2026 The Hoolock Linux contributors
++ */
++
++#include <linux/completion.h>
++#include <linux/delay.h>
++#include <linux/idr.h>
++#include <linux/module.h>
++#include <linux/mutex.h>
++#include <linux/mux/consumer.h>
++#include <linux/of.h>
++#include <linux/power/bq27xxx_battery.h>
++#include <linux/property.h>
++#include <linux/serdev.h>
++#include <linux/spinlock.h>
++
++#define HDQ_UART_BAUD		57600
++#define HDQ_UART_BIT_0		0xc0
++#define HDQ_UART_BIT_1		0xff
++/* A received character above this is a short pulse, i.e. a "1" */
++#define HDQ_UART_RX_1_MIN	0xf9
++
++#define HDQ_CMD_READ		(0 << 7)
++#define HDQ_CMD_BITS		8
++#define HDQ_DATA_BITS		8
++
++#define HDQ_BREAK_US		200
++#define HDQ_BREAK_RECOVERY_US	60
++#define HDQ_XFER_TIMEOUT_MS	25
++#define HDQ_RETRIES		3
++
++struct bq27xxx_hdq_uart_chip {
++	const char *name;
++	enum bq27xxx_chip chip;
++};
++
++static DEFINE_IDA(bq27xxx_hdq_uart_ida);
++
++struct bq27xxx_hdq_uart {
++	struct serdev_device *serdev;
++	int id;
++	struct bq27xxx_device_info di;
++	struct mux_state *line;		/* optional HDQ line switch */
++	struct mutex xfer_lock;		/* one HDQ transaction at a time */
++
++	spinlock_t rx_lock;		/* protects the fields below */
++	u8 rx_buf[HDQ_CMD_BITS + HDQ_DATA_BITS];
++	size_t rx_len;
++	size_t rx_want;
++	struct completion rx_done;
++};
++
++static size_t bq27xxx_hdq_uart_receive(struct serdev_device *serdev,
++				       const u8 *buf, size_t count)
++{
++	struct bq27xxx_hdq_uart *hu = serdev_device_get_drvdata(serdev);
++	size_t orig_count = count;
++	unsigned long flags;
++	size_t n;
++
++	spin_lock_irqsave(&hu->rx_lock, flags);
++	/* Anything that arrives while nobody is waiting is line noise */
++	if (hu->rx_want) {
++		/*
++		 * The break is echoed as a NUL character (host bits are never
++		 * NUL). It may be delivered late, so drop it here.
++		 */
++		while (!hu->rx_len && count && !*buf) {
++			buf++;
++			count--;
++		}
++		n = min(count, sizeof(hu->rx_buf) - hu->rx_len);
++		memcpy(hu->rx_buf + hu->rx_len, buf, n);
++		hu->rx_len += n;
++		if (hu->rx_len >= hu->rx_want) {
++			hu->rx_want = 0;
++			complete(&hu->rx_done);
++		}
++	}
++	spin_unlock_irqrestore(&hu->rx_lock, flags);
++
++	/* Always consume everything */
++	return orig_count;
++}
++
++static const struct serdev_device_ops bq27xxx_hdq_uart_serdev_ops = {
++	.receive_buf = bq27xxx_hdq_uart_receive,
++	.write_wakeup = serdev_device_write_wakeup,
++};
++
++static void bq27xxx_hdq_uart_expect(struct bq27xxx_hdq_uart *hu, size_t want)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&hu->rx_lock, flags);
++	hu->rx_len = 0;
++	hu->rx_want = want;
++	reinit_completion(&hu->rx_done);
++	spin_unlock_irqrestore(&hu->rx_lock, flags);
++}
++
++/* Returns the number of characters received */
++static size_t bq27xxx_hdq_uart_wait(struct bq27xxx_hdq_uart *hu)
++{
++	unsigned long flags;
++	size_t len;
++
++	wait_for_completion_timeout(&hu->rx_done,
++				    msecs_to_jiffies(HDQ_XFER_TIMEOUT_MS));
++
++	spin_lock_irqsave(&hu->rx_lock, flags);
++	hu->rx_want = 0;
++	len = hu->rx_len;
++	spin_unlock_irqrestore(&hu->rx_lock, flags);
++
++	return len;
++}
++
++static int bq27xxx_hdq_uart_break(struct bq27xxx_hdq_uart *hu)
++{
++	int ret;
++
++	ret = serdev_device_break_ctl(hu->serdev, 1);
++	if (ret)
++		return ret;
++	usleep_range(HDQ_BREAK_US, HDQ_BREAK_US + 50);
++	ret = serdev_device_break_ctl(hu->serdev, 0);
++	usleep_range(HDQ_BREAK_RECOVERY_US, HDQ_BREAK_RECOVERY_US + 40);
++
++	return ret;
++}
++
++static int bq27xxx_hdq_uart_read8_once(struct bq27xxx_hdq_uart *hu, u8 cmd)
++{
++	struct device *dev = &hu->serdev->dev;
++	u8 tx[HDQ_CMD_BITS];
++	size_t len;
++	int i, ret, val = 0;
++
++	for (i = 0; i < HDQ_CMD_BITS; i++)
++		tx[i] = (cmd & BIT(i)) ? HDQ_UART_BIT_1 : HDQ_UART_BIT_0;
++
++	/* Resynchronise the gauge before every transaction */
++	bq27xxx_hdq_uart_expect(hu, HDQ_CMD_BITS + HDQ_DATA_BITS);
++	ret = bq27xxx_hdq_uart_break(hu);
++	if (ret)
++		return ret;
++
++	ret = serdev_device_write(hu->serdev, tx, sizeof(tx),
++				  msecs_to_jiffies(HDQ_XFER_TIMEOUT_MS));
++	if (ret < 0)
++		return ret;
++	if (ret != sizeof(tx))
++		return -EIO;
++
++	len = bq27xxx_hdq_uart_wait(hu);
++
++	if (len < HDQ_CMD_BITS || memcmp(hu->rx_buf, tx, HDQ_CMD_BITS)) {
++		dev_dbg(dev, "cmd %#04x: bad echo (%zu chars: %*ph)\n",
++			cmd, len, (int)min_t(size_t, len, HDQ_CMD_BITS), hu->rx_buf);
++		return -EIO;
++	}
++	if (len < HDQ_CMD_BITS + HDQ_DATA_BITS) {
++		dev_dbg(dev, "cmd %#04x: no response (%zu chars)\n", cmd, len);
++		return -ETIMEDOUT;
++	}
++
++	for (i = 0; i < HDQ_DATA_BITS; i++)
++		if (hu->rx_buf[HDQ_CMD_BITS + i] >= HDQ_UART_RX_1_MIN)
++			val |= BIT(i);
++
++	dev_dbg(dev, "cmd %#04x: %*ph -> %#04x\n", cmd, HDQ_DATA_BITS,
++		hu->rx_buf + HDQ_CMD_BITS, val);
++
++	return val;
++}
++
++static int bq27xxx_hdq_uart_read8(struct bq27xxx_hdq_uart *hu, u8 reg)
++{
++	int ret = -EIO, tries;
++
++	mutex_lock(&hu->xfer_lock);
++	for (tries = 0; tries < HDQ_RETRIES; tries++) {
++		ret = bq27xxx_hdq_uart_read8_once(hu, HDQ_CMD_READ | (reg & 0x7f));
++		if (ret >= 0)
++			break;
++	}
++	mutex_unlock(&hu->xfer_lock);
++
++	return ret;
++}
++
++static int __bq27xxx_hdq_uart_read(struct bq27xxx_hdq_uart *hu, u8 reg,
++				   bool single)
++{
++	int upper, lower, prev, tries = 3;
++
++	if (single)
++		return bq27xxx_hdq_uart_read8(hu, reg);
++
++	/*
++	 * HDQ reads one byte per transaction: re-read the upper byte until it
++	 * is stable so that a carry between the two halves is not missed.
++	 */
++	upper = bq27xxx_hdq_uart_read8(hu, reg + 1);
++	do {
++		if (upper < 0)
++			return upper;
++		prev = upper;
++
++		lower = bq27xxx_hdq_uart_read8(hu, reg);
++		if (lower < 0)
++			return lower;
++
++		upper = bq27xxx_hdq_uart_read8(hu, reg + 1);
++	} while (upper != prev && --tries);
++
++	if (!tries)
++		return -EIO;
++
++	return (upper << 8) | lower;
++}
++
++static int bq27xxx_hdq_uart_read(struct bq27xxx_device_info *di, u8 reg,
++				 bool single)
++{
++	struct bq27xxx_hdq_uart *hu = container_of(di, struct bq27xxx_hdq_uart, di);
++	int ret;
++
++	if (hu->line) {
++		ret = mux_state_select(hu->line);
++		if (ret)
++			return ret;
++	}
++
++	ret = __bq27xxx_hdq_uart_read(hu, reg, single);
++
++	if (hu->line)
++		mux_state_deselect(hu->line);
++
++	return ret;
++}
++
++static void bq27xxx_hdq_uart_free_id(void *data)
++{
++	struct bq27xxx_hdq_uart *hu = data;
++
++	ida_free(&bq27xxx_hdq_uart_ida, hu->id);
++}
++
++static int bq27xxx_hdq_uart_probe(struct serdev_device *serdev)
++{
++	struct device *dev = &serdev->dev;
++	const struct bq27xxx_hdq_uart_chip *chip;
++	struct bq27xxx_hdq_uart *hu;
++	unsigned int baud;
++	int ret;
++
++	hu = devm_kzalloc(dev, sizeof(*hu), GFP_KERNEL);
++	if (!hu)
++		return -ENOMEM;
++
++	hu->serdev = serdev;
++
++	hu->line = devm_mux_state_get_optional(dev, NULL);
++	if (IS_ERR(hu->line))
++		return dev_err_probe(dev, PTR_ERR(hu->line),
++				     "failed to get HDQ line switch\n");
++
++	mutex_init(&hu->xfer_lock);
++	spin_lock_init(&hu->rx_lock);
++	init_completion(&hu->rx_done);
++	serdev_device_set_drvdata(serdev, hu);
++	serdev_device_set_client_ops(serdev, &bq27xxx_hdq_uart_serdev_ops);
++
++	ret = devm_serdev_device_open(dev, serdev);
++	if (ret)
++		return dev_err_probe(dev, ret, "failed to open UART\n");
++
++	serdev_device_set_flow_control(serdev, false);
++	baud = serdev_device_set_baudrate(serdev, HDQ_UART_BAUD);
++	if (baud != HDQ_UART_BAUD)
++		return dev_err_probe(dev, -EINVAL, "UART can't do %u baud (%u)\n",
++				     HDQ_UART_BAUD, baud);
++
++	ret = serdev_device_set_parity(serdev, SERDEV_PARITY_ODD);
++	if (ret)
++		return dev_err_probe(dev, ret, "UART can't do odd parity\n");
++
++	chip = device_get_match_data(dev);
++	if (!chip)
++		return -ENODEV;
++
++	hu->id = ida_alloc(&bq27xxx_hdq_uart_ida, GFP_KERNEL);
++	if (hu->id < 0)
++		return hu->id;
++	ret = devm_add_action_or_reset(dev, bq27xxx_hdq_uart_free_id, hu);
++	if (ret)
++		return ret;
++
++	hu->di.dev = dev;
++	hu->di.chip = chip->chip;
++	hu->di.name = devm_kasprintf(dev, GFP_KERNEL, "%s-%d", chip->name, hu->id);
++	if (!hu->di.name)
++		return -ENOMEM;
++	hu->di.bus.read = bq27xxx_hdq_uart_read;
++
++	/* Is anybody there? */
++	ret = bq27xxx_hdq_uart_read(&hu->di, 0x08, false);
++	if (ret < 0)
++		return dev_err_probe(dev, ret, "no response from gauge\n");
++	dev_info(dev, "HDQ link up, voltage register reads %d mV\n", ret);
++
++	return bq27xxx_battery_setup(&hu->di);
++}
++
++static void bq27xxx_hdq_uart_remove(struct serdev_device *serdev)
++{
++	struct bq27xxx_hdq_uart *hu = serdev_device_get_drvdata(serdev);
++
++	bq27xxx_battery_teardown(&hu->di);
++}
++
++/* The bq27540 uses the standard command set of the bq27541 family */
++static const struct bq27xxx_hdq_uart_chip bq27540_chip = {
++	.name = "bq27540",
++	.chip = BQ27541,
++};
++
++static const struct of_device_id bq27xxx_hdq_uart_of_match[] = {
++	{ .compatible = "ti,bq27540-hdq", .data = &bq27540_chip },
++	{ }
++};
++MODULE_DEVICE_TABLE(of, bq27xxx_hdq_uart_of_match);
++
++static struct serdev_device_driver bq27xxx_hdq_uart_driver = {
++	.probe = bq27xxx_hdq_uart_probe,
++	.remove = bq27xxx_hdq_uart_remove,
++	.driver = {
++		.name = KBUILD_MODNAME,
++		.of_match_table = bq27xxx_hdq_uart_of_match,
++	},
++};
++module_serdev_device_driver(bq27xxx_hdq_uart_driver);
++
++MODULE_DESCRIPTION("BQ27xxx battery monitor, HDQ over UART transport");
++MODULE_LICENSE("GPL");
+-- 
+2.55.0
+
