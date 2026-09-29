@@ -1,6 +1,6 @@
 # Touch (iPhone 6s N71 multitouch on spi2)
 
-**Status:** partial. The SPI controller driver, DT and apple_z2 iPhone variant are written and
+**Status:** partial (build-verified; dt_binding_check and dtbs_check clean for n71/n71m/n66 with dtschema 2026.9). The SPI controller driver, DT and apple_z2 iPhone variant are written and
 build clean (W=1, dtbs). **Nothing has run on the phone yet.** The one overlay attempt hung
 because the kernel was already wedged by an unrelated overlay-remove oops, and phone tests were
 paused. The protocol is identified from iOS static analysis. No touch events have been seen.
@@ -101,3 +101,23 @@ coordinate range are unverified. The analog rail is off.
    finger in each corner, then two fingers. Check that ABS_MT_POSITION_X/Y change, the range
    and orientation (it may be inverted or scaled against 750x1334), and that BTN_TOUCH/slot
    release on lift.
+
+## Provenance
+
+| fact | source |
+|---|---|
+| SPI v1 register usage, FIFO level fields, depth 16, CFG bits, 0x40000f clear, PIO order | iOS 15.8.8 kernelcache, `AppleSamsungSPI` kext, static disassembly (capstone) |
+| "S5L" variant idea (FIFO levels in STATUS) | HoolockLinux `tests/kat-spi` branch (public, read-only) |
+| M1 SPI layout used for comparison | upstream `spi-apple.c`, Asahi m1n1 `hw/spi.py` (public) |
+| spi2 reg/irq/clock-gate, `function-spi_cs0` GPIO 44, reset GPIO 75, irq GPIO 142, SPI mode/period in `reg`, power/clock functions | IPSW ADT `DeviceTree.n71ap` (template) |
+| `multi-touch-calibration` (1024 B) and orb/prox cal values | runtime ADT from `/dev/mtd1ro` (device unique, not published) |
+| PMGR index to ps_spi2 (0x801c8) | ADT pmgr `devices` table, cross-checked with foundation |
+| SCK/MOSI/MISO = GPIO 41-43 func 1, CS 44 func 1, reset 75 = output low | live read-only pin-register dump (`tpindump1`) |
+| LDO26 on (0x319=01), Chestnut 0x05 = 0x0f (touch analog off) | live read-only PMU/i2c reads (`ttpwr_v1`) |
+| LDO index 0x19 -> reg 0x319, Chestnut select 2 -> reg 0x05 bit4 | iOS `AppleD2255PMU` LDO table and `AppleChestnutDisplayPMU::setLDO`, static disassembly |
+| `Z2Compliant`, N1 addresses (fll, ref-clk-div, clk32, cal-dl, prox-cal, fw-execute) | iOS kernelcache `__PRELINK_INFO`, `AppleMultitouchSPIN71` personality |
+| HBPP packet ids, ack codes, N1 boot order, MemRead/RegWrite/EXECUTE formats | iOS `AppleMultitouchSPI` kext (`MTSPIBootloader_Z2/_N1`, `AppleMultitouchZ2SPI`), static disassembly |
+| constructed firmware images, `PreconstructedBootloadPacketType=Z2`, version 0x0670.mihu | IPSW rootfs `/usr/share/firmware/multitouch/N71.mtprops` (checksums checked by the extractor) |
+| Z2FW container, touch bar packet layouts (0x3001 DATA, 0x1e33 RMW, 0x1f01), EB/E1 report read | Asahi `asahi_firmware/multitouch.py` and upstream `apple_z2.c` (public) |
+
+Nothing in this document comes from live SPI traffic yet.
