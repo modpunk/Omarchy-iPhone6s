@@ -205,7 +205,9 @@ Two things were broken, and why:
 Measured on the phone (Hyprland plus two foot windows, one running `top -d 1`): Hyprland RSS
 about 225 MB (about 108 MB of it shared, mostly llvm-libs), foot 13 MB each, 562 MB still
 available. CPU is 0% when idle, and about 4.5% of the system with one update per second.
-Without the shim that load cost 2.0 s of Hyprland CPU per 20 s, and with it 1.6 s.
+Hyprland used 1.6 s of CPU per 20 s under that load with the shim. The run without it (2.0 s) had
+`Hyprland` started directly with the file log on, so it isn't a clean comparison. The effect
+you can see is the log going from 7 lines per commit to none.
 
 `~/.config/hypr/hyprland.lua` (from `/etc/skel`): the preferred mode at scale 2 (375x667
 logical), with animations, blur, shadows and rounding off, Xwayland off, software cursor,
