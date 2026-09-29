@@ -1,0 +1,66 @@
+From 048eac51ad37ea15a3594b6a219da7a77fe37d96 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:20:47 -0500
+Subject: [PATCH 3/6] Bluetooth: btbcm: Add BCM4350C5 UART support
+
+The Bluetooth half of the Broadcom BCM4350 combo chip in the iPhone 6s
+(USI 339S00043 module) is attached over UART and reports LMP subversion
+0x6607, which was only known for USB so far. Add it to the UART table so
+that the firmware is requested as brcm/BCM4350C5.<board>.hcd instead of
+the generic brcm/BCM.<board>.hcd:
+
+  Bluetooth: hci0: BCM4350C5
+  Bluetooth: hci0: BCM (003.006.007) build 0000
+
+Also treat the controller default address 43:50:C5:00:1F:AC as invalid.
+Every such chip comes up with it; the real address lives in Apple's
+syscfg and has to be provided via local-bd-address or set from user
+space.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/bluetooth/btbcm.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/bluetooth/btbcm.c b/drivers/bluetooth/btbcm.c
+index 463d59890bef..376c008f75fc 100644
+--- a/drivers/bluetooth/btbcm.c
++++ b/drivers/bluetooth/btbcm.c
+@@ -30,6 +30,7 @@
+ #define BDADDR_BCM4330B1 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb1, 0x30, 0x43}})
+ #define BDADDR_BCM4334B0 (&(bdaddr_t) {{0x00, 0x00, 0x00, 0xb0, 0x34, 0x43}})
+ #define BDADDR_BCM4345C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x45, 0x43}})
++#define BDADDR_BCM4350C5 (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0xc5, 0x50, 0x43}})
+ #define BDADDR_BCM43341B (&(bdaddr_t) {{0xac, 0x1f, 0x00, 0x1b, 0x34, 0x43}})
+ 
+ #define BCM_FW_NAME_LEN			64
+@@ -120,6 +121,9 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
+ 	 *
+ 	 * The address AA:AA:AA:AA:AA:AA indicates a BCM43430A1 controller
+ 	 * with no configured address.
++	 *
++	 * The address 43:50:C5:00:1F:AC indicates a BCM4350C5 controller
++	 * with no configured address.
+ 	 */
+ 	if (!bacmp(&bda->bdaddr, BDADDR_BCM20702A0) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM20702A1) ||
+@@ -128,6 +132,7 @@ int btbcm_check_bdaddr(struct hci_dev *hdev)
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM4330B1) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM4334B0) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM4345C5) ||
++	    !bacmp(&bda->bdaddr, BDADDR_BCM4350C5) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A0) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM43430A1) ||
+ 	    !bacmp(&bda->bdaddr, BDADDR_BCM43341B)) {
+@@ -504,6 +509,7 @@ static const struct bcm_subver_table bcm_uart_subver_table[] = {
+ 	{ 0x2209, "BCM43430A1"  },	/* 001.002.009 */
+ 	{ 0x6119, "BCM4345C0"	},	/* 003.001.025 */
+ 	{ 0x6606, "BCM4345C5"	},	/* 003.006.006 */
++	{ 0x6607, "BCM4350C5"	},	/* 003.006.007 */
+ 	{ 0x230f, "BCM4356A2"	},	/* 001.003.015 */
+ 	{ 0x2310, "BCM4343A2"	},	/* 001.003.016 */
+ 	{ 0x220e, "BCM20702A1"  },	/* 001.002.014 */
+-- 
+2.55.0
+
