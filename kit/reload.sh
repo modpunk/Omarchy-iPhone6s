@@ -133,7 +133,7 @@ cp "$KL" "$STATE/stage/kexec-lite"
 say "pushing kernel, initrd, dtb, kexec-lite"
 for f in kexec-lite fr.dtb fr-initrd fr-Image; do "$PH" push "$STATE/stage/$f" >/dev/null; done
 say "kexec_load"
-"$PH" lock "chmod +x /tmp/6s/kexec-lite && /tmp/6s/kexec-lite load /tmp/6s/fr-Image@$KERNEL_ADDR /tmp/6s/fr-initrd@$INITRD_ADDR /tmp/6s/fr.dtb@$DTB_ADDR $PURG_ADDR; rc=\$?; rm -f /tmp/6s/fr-Image; echo loaded=\$(cat /sys/kernel/kexec_loaded); exit \$rc" 120 ||
+"$PH" lock "chmod +x /tmp/6s/kexec-lite && /tmp/6s/kexec-lite load /tmp/6s/fr-Image@$KERNEL_ADDR /tmp/6s/fr-initrd@$INITRD_ADDR /tmp/6s/fr.dtb@$DTB_ADDR $PURG_ADDR; rc=\$?; rm -f /tmp/6s/fr-Image; echo loaded=\$(cat /sys/kernel/kexec_loaded); (exit \$rc)" 120 ||
 	die "kexec_load failed (see above; dmesg on the phone has details). Nothing changed."
 if [ "$LOADONLY" = 1 ]; then
 	echo "loaded; jump with: testkit/phone.sh lock '/tmp/6s/kexec-lite exec'"
