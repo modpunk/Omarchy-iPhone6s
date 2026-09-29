@@ -22,3 +22,5 @@ modules.order
 Module.symvers
 build/
 out/
+kit/fast-reload/kexec-lite
+__pycache__/

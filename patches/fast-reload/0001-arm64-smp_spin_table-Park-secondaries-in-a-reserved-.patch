@@ -1,0 +1,356 @@
+From 008e5f7bdd1a4d07650ef567ef66ab858afa8529 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 09:53:56 -0500
+Subject: [PATCH] arm64: smp_spin_table: Park secondaries in a reserved page
+ for hotplug and kexec
+
+Spin-table CPUs can never leave the kernel, so arm64 refuses kexec
+("CPUs are stuck in the kernel") and CPU hotplug on spin-table systems.
+On Apple A7-A11 phones booted by m1n1 the loader's own spin loop sits in
+memory Linux reuses, so a CPU cannot be handed back to it either.
+
+Keep a small park loop in a reserved page instead. Secondaries are
+released from the loader into the park loop, enter the kernel from there
+(cpu_boot writes the holding pen address into their slot) and return to
+it with the MMU off when they die (cpu_disable/cpu_die via
+cpu_soft_restart). Page layout: loop code at 0, "SPINPARK" magic at
+0x7f0, one u64 slot per MPIDR.Aff0 at 0x800.
+
+A kexec'd kernel finds the page through a reserved-memory node
+compatible with "linux,spin-table-park" (no-map, added by the kexec
+loader), verifies the magic and releases the CPUs still parked there,
+without rewriting the loop they are executing. The page is published in
+/proc/iomem as "spin-table park" so userspace can find it.
+
+This gives spin-table systems CPU hotplug (echo 0/1 > cpuN/online) and
+kexec with all CPUs online. Limited to CPUs with MPIDR Aff1..3 == 0
+(single-cluster A-series); otherwise behaviour is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ arch/arm64/kernel/smp_spin_table.c | 254 ++++++++++++++++++++++++++++-
+ 1 file changed, 252 insertions(+), 2 deletions(-)
+
+diff --git a/arch/arm64/kernel/smp_spin_table.c b/arch/arm64/kernel/smp_spin_table.c
+index 49029eace3ad..b8b3ee88c3b2 100644
+--- a/arch/arm64/kernel/smp_spin_table.c
++++ b/arch/arm64/kernel/smp_spin_table.c
+@@ -7,7 +7,11 @@
+ 
+ #include <linux/delay.h>
+ #include <linux/init.h>
++#include <linux/io.h>
++#include <linux/ioport.h>
++#include <linux/memblock.h>
+ #include <linux/of.h>
++#include <linux/of_address.h>
+ #include <linux/smp.h>
+ #include <linux/types.h>
+ #include <linux/mm.h>
+@@ -16,7 +20,10 @@
+ #include <asm/cpu_ops.h>
+ #include <asm/cputype.h>
+ #include <asm/io.h>
++#include <asm/kexec.h>
++#include <asm/mmu_context.h>
+ #include <asm/smp_plat.h>
++#include <asm/virt.h>
+ 
+ extern void secondary_holding_pen(void);
+ volatile unsigned long __section(".mmuoff.data.read")
+@@ -24,6 +31,216 @@ secondary_holding_pen_release = INVALID_HWID;
+ 
+ static phys_addr_t cpu_release_addr[NR_CPUS];
+ 
++#if defined(CONFIG_HOTPLUG_CPU) && defined(CONFIG_KEXEC_CORE)
++/*
++ * Spin-table park page.
++ *
++ * Upstream spin-table has no way to take a CPU back out of the kernel, so
++ * CPU hotplug and kexec are impossible on spin-table systems. On Apple A7-A11
++ * phones the loader (m1n1) is gone once Linux runs and its spin loop lives in
++ * memory Linux reuses, so we cannot hand CPUs back to it either.
++ *
++ * Instead the kernel keeps its own tiny park loop in a reserved page:
++ *
++ *   0x000  park code: poll slot[MPIDR.Aff0], WFE while zero, then branch to it
++ *   0x7f0  magic "SPINPARK" + layout version
++ *   0x800  u64 slot[256], indexed by MPIDR.Aff0
++ *
++ * Secondaries are released from the loader into the park loop, enter the
++ * kernel from there (cpu_boot writes the holding pen into their slot) and go
++ * back to it with the MMU off when they die. A kexec'd kernel finds the page
++ * through a reserved-memory node compatible with "linux,spin-table-park"
++ * (added by the kexec loader), keeps it reserved and releases the CPUs that
++ * are still parked there. The page is listed in /proc/iomem as
++ * "spin-table park" so the loader knows where it is.
++ */
++#define PARK_SIZE		max_t(unsigned long, PAGE_SIZE, SZ_16K)
++#define PARK_MAGIC_OFF		0x7f0
++#define PARK_MAGIC		0x4b5241504e495053ULL	/* "SPINPARK" */
++#define PARK_VERSION		1
++#define PARK_SLOTS_OFF		0x800
++#define PARK_MAX_AFF0		0xff
++
++/* Position independent; runs with the MMU on (m1n1 identity map) or off. */
++asm(
++"	.pushsection .rodata, \"a\"\n"
++"	.balign	8\n"
++"	.globl	spin_park_code\n"
++"spin_park_code:\n"
++"0:	adr	x2, 0b\n"
++"	add	x2, x2, #" __stringify(PARK_SLOTS_OFF) "\n"
++"	mrs	x1, mpidr_el1\n"
++"	and	x1, x1, #" __stringify(PARK_MAX_AFF0) "\n"
++"	add	x2, x2, x1, lsl #3\n"
++"1:	ldr	x3, [x2]\n"
++"	cbnz	x3, 2f\n"
++"	wfe\n"
++"	b	1b\n"
++"2:	br	x3\n"
++"	.globl	spin_park_code_end\n"
++"spin_park_code_end:\n"
++"	.popsection\n");
++
++extern const u32 spin_park_code[], spin_park_code_end[];
++
++static phys_addr_t park_phys;
++static void *park_virt;
++static bool park_ok;		/* page usable: CPUs can be parked */
++static bool park_inherited;	/* page came from a previous kernel via DT */
++static bool cpu_parked[NR_CPUS];
++
++static struct resource park_res = {
++	.name	= "spin-table park",
++	.flags	= IORESOURCE_MEM | IORESOURCE_BUSY,
++};
++
++static u64 *park_slot(unsigned int cpu)
++{
++	return park_virt + PARK_SLOTS_OFF +
++	       8 * (cpu_logical_map(cpu) & PARK_MAX_AFF0);
++}
++
++static void park_write_slot(unsigned int cpu, u64 val)
++{
++	u64 *slot = park_slot(cpu);
++
++	WRITE_ONCE(*slot, val);
++	dcache_clean_inval_poc((unsigned long)slot,
++			       (unsigned long)slot + sizeof(*slot));
++}
++
++static void __init park_setup(void)
++{
++	static bool done __initdata;
++	struct device_node *np;
++	struct resource res;
++	unsigned int cpu;
++
++	if (done)
++		return;
++	done = true;
++
++	for_each_possible_cpu(cpu) {
++		if (cpu_logical_map(cpu) & ~(u64)PARK_MAX_AFF0) {
++			pr_warn("spin-table park: CPU%u MPIDR 0x%llx not supported, no hotplug/kexec\n",
++				cpu, cpu_logical_map(cpu));
++			return;
++		}
++	}
++
++	np = of_find_compatible_node(NULL, NULL, "linux,spin-table-park");
++	if (np) {
++		int ret = of_address_to_resource(np, 0, &res);
++
++		of_node_put(np);
++		if (ret || resource_size(&res) < PARK_SIZE ||
++		    !IS_ALIGNED(res.start, PARK_SIZE)) {
++			pr_err("spin-table park: bad reserved-memory node, no hotplug/kexec\n");
++			return;
++		}
++		park_phys = res.start;
++		park_inherited = true;
++	} else {
++		park_phys = memblock_phys_alloc(PARK_SIZE, PARK_SIZE);
++		if (!park_phys) {
++			pr_err("spin-table park: no memory, no hotplug/kexec\n");
++			return;
++		}
++	}
++	park_ok = true;
++}
++
++/* Map the page and, unless a previous kernel left it, install the loop. */
++static int park_map(void)
++{
++	u64 *magic;
++
++	if (park_virt)
++		return 0;
++
++	park_virt = memremap(park_phys, PARK_SIZE, MEMREMAP_WB);
++	if (!park_virt)
++		return -ENOMEM;
++	magic = park_virt + PARK_MAGIC_OFF;
++
++	if (park_inherited) {
++		/* The CPUs are executing this page: verify, never rewrite. */
++		if (magic[0] != PARK_MAGIC || magic[1] != PARK_VERSION) {
++			pr_err("spin-table park: inherited page at %pa has no park loop\n",
++			       &park_phys);
++			memunmap(park_virt);
++			park_virt = NULL;
++			return -EINVAL;
++		}
++		return 0;
++	}
++
++	memset(park_virt, 0, PARK_SIZE);
++	memcpy(park_virt, spin_park_code,
++	       (unsigned long)spin_park_code_end - (unsigned long)spin_park_code);
++	magic[0] = PARK_MAGIC;
++	magic[1] = PARK_VERSION;
++	dcache_clean_inval_poc((unsigned long)park_virt,
++			       (unsigned long)park_virt + PARK_SIZE);
++	caches_clean_inval_pou((unsigned long)park_virt,
++			       (unsigned long)park_virt + PARK_SIZE);
++	return 0;
++}
++
++static int __init park_publish(void)
++{
++	if (!park_ok || !park_virt)
++		return 0;
++	park_res.start = park_phys;
++	park_res.end = park_phys + PARK_SIZE - 1;
++	if (insert_resource(&iomem_resource, &park_res))
++		pr_warn("spin-table park: could not publish %pa in /proc/iomem\n",
++			&park_phys);
++	else
++		pr_info("spin-table park: %pR (%s)\n", &park_res,
++			park_inherited ? "inherited" : "allocated");
++	return 0;
++}
++device_initcall(park_publish);
++
++static bool smp_spin_table_cpu_can_disable(unsigned int cpu)
++{
++	return park_ok;
++}
++
++static int smp_spin_table_cpu_disable(unsigned int cpu)
++{
++	if (!park_ok || !park_virt)
++		return -EOPNOTSUPP;
++
++	/*
++	 * Arm the park before this CPU is reported dead: once it is, the boot
++	 * CPU may bring it straight back up and will then use the slot.
++	 */
++	park_write_slot(cpu, 0);
++	WRITE_ONCE(cpu_parked[cpu], true);
++	return 0;
++}
++
++static void smp_spin_table_cpu_die(unsigned int cpu)
++{
++	typeof(cpu_soft_restart) *restart;
++
++	/* MMU off, then spin in the park page until the slot is written. */
++	cpu_install_idmap();
++	restart = (void *)__pa_symbol(cpu_soft_restart);
++	restart(is_hyp_nvhe(), park_phys, 0, 0, 0);
++}
++#else
++static inline void park_setup(void) { }
++static inline int park_map(void) { return -EOPNOTSUPP; }
++static inline void park_write_slot(unsigned int cpu, u64 val) { }
++static bool park_ok;
++static const bool park_inherited;
++static const phys_addr_t park_phys;
++static bool cpu_parked[NR_CPUS];
++#endif
++
+ /*
+  * Write secondary_holding_pen_release in a way that is guaranteed to be
+  * visible to all observers, irrespective of whether they're taking part
+@@ -40,7 +257,7 @@ static void write_pen_release(u64 val)
+ }
+ 
+ 
+-static int smp_spin_table_cpu_init(unsigned int cpu)
++static int __init smp_spin_table_cpu_init(unsigned int cpu)
+ {
+ 	struct device_node *dn;
+ 	int ret;
+@@ -49,12 +266,16 @@ static int smp_spin_table_cpu_init(unsigned int cpu)
+ 	if (!dn)
+ 		return -ENODEV;
+ 
++	park_setup();
++
+ 	/*
+ 	 * Determine the address from which the CPU is polling.
+ 	 */
+ 	ret = of_property_read_u64(dn, "cpu-release-addr",
+ 				   &cpu_release_addr[cpu]);
+-	if (ret)
++	if (ret && park_inherited)
++		ret = 0;	/* parked by the previous kernel, no release address needed */
++	else if (ret)
+ 		pr_err("CPU %d: missing or invalid cpu-release-addr property\n",
+ 		       cpu);
+ 
+@@ -68,6 +289,23 @@ static int smp_spin_table_cpu_prepare(unsigned int cpu)
+ 	__le64 __iomem *release_addr;
+ 	phys_addr_t pa_holding_pen = __pa_symbol(secondary_holding_pen);
+ 
++	if (park_ok && park_map())
++		park_ok = false;	/* no hotplug/kexec, boot the upstream way */
++
++	if (park_ok) {
++		if (park_inherited) {
++			/* A previous kernel left this CPU in the park loop. */
++			cpu_parked[cpu] = true;
++			return 0;
++		}
++		/* Release the CPU from the loader into our park loop. */
++		pa_holding_pen = park_phys;
++		cpu_parked[cpu] = true;
++	} else if (park_inherited) {
++		/* Don't know where the CPU is; never touch it. */
++		return -ENODEV;
++	}
++
+ 	if (!cpu_release_addr[cpu])
+ 		return -ENODEV;
+ 
+@@ -106,6 +344,13 @@ static int smp_spin_table_cpu_prepare(unsigned int cpu)
+ 
+ static int smp_spin_table_cpu_boot(unsigned int cpu)
+ {
++	/* Move a parked CPU into the holding pen. */
++	if (READ_ONCE(cpu_parked[cpu])) {
++		park_write_slot(cpu, __pa_symbol(secondary_holding_pen));
++		WRITE_ONCE(cpu_parked[cpu], false);
++		sev();
++	}
++
+ 	/*
+ 	 * Update the pen release flag.
+ 	 */
+@@ -124,4 +369,9 @@ const struct cpu_operations smp_spin_table_ops = {
+ 	.cpu_init	= smp_spin_table_cpu_init,
+ 	.cpu_prepare	= smp_spin_table_cpu_prepare,
+ 	.cpu_boot	= smp_spin_table_cpu_boot,
++#if defined(CONFIG_HOTPLUG_CPU) && defined(CONFIG_KEXEC_CORE)
++	.cpu_can_disable = smp_spin_table_cpu_can_disable,
++	.cpu_disable	= smp_spin_table_cpu_disable,
++	.cpu_die	= smp_spin_table_cpu_die,
++#endif
+ };
+-- 
+2.55.0
+
