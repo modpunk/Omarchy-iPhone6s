@@ -103,5 +103,7 @@ smoke busybox
 printf '  %-28s ' "sshd -t (config test)"; chroot "$ROOT" /usr/bin/sshd -t && echo ok
 printf '  %-28s ' "mesa kms_swrast present"
 [ -e "$ROOT/usr/lib/dri/kms_swrast_dri.so" ] && [ -e "$ROOT/usr/lib/gbm/dri_gbm.so" ] && echo yes || echo NO
+printf '  %-28s ' "aq-simpledrm shim (aarch64)"
+file -b "$ROOT/usr/lib/phone-tk/aq-simpledrm.so" 2>/dev/null | grep -q aarch64 && echo yes || echo NO
 printf '  %-28s ' "EGL vendor (mesa)"; ls "$ROOT"/usr/share/glvnd/egl_vendor.d/ | tr '\n' ' '; echo
 printf '  %-28s ' "file capabilities to restore"; getcap -r "$ROOT/usr" 2>/dev/null | sed "s|$ROOT||" | tr '\n' ';'; echo

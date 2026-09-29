@@ -5,8 +5,8 @@ sshd on the USB network, iwd, BlueZ, PipeWire, seatd, Mesa llvmpipe, Hyprland 0.
 foot terminal. It's the base for Omarchy Phone (Arch Linux ARM + Hyprland).
 
 **Status:** builds and passes every laptop-side check, and the PID 1 hand-over passes a
-laptop rehearsal. **It hasn't run on the phone yet.** Hyprland on llvmpipe is the least
-certain part.
+laptop rehearsal. It runs on the phone: on 2026-09-29 Hyprland 0.56.2 drew foot on the
+simpledrm panel with llvmpipe (see "Hyprland on simpledrm").
 
 ## How it boots
 
@@ -100,6 +100,10 @@ Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone 
    ssh omarchy@172.16.42.1 'tail -50 ~/.cache/hyprland.log; pgrep -a foot'
    ssh omarchy@172.16.42.1 pkill -x Hyprland               # stop
    ```
+   Screenshot (Hyprland's socket dir is the newest one under `/run/user/1000/hypr`):
+   ```sh
+   ssh omarchy@172.16.42.1 'WAYLAND_DISPLAY=wayland-1 grim /tmp/s.png' && scp omarchy@172.16.42.1:/tmp/s.png .
+   ```
 
 **No reboot yet?** `stage2.sh nsboot` is an **experimental** path for the stock ramdisk. It boots
 systemd as PID 1 of a new pid and mount namespace, the same way a container runs it. It stops
@@ -165,26 +169,55 @@ Workarounds, if a package breaks on the device:
   `testkit/bluetooth/mk-alpine-bluez.sh` already builds such a chroot rootlessly with
   `apk.static`. No package needed this so far.
 
-## Hyprland on simpledrm (not yet tested on the device)
+## Hyprland on simpledrm
 
 simpledrm is KMS-only: there's no render node and no GPU (the PowerVR has no open driver). Mesa's
-`kms_swrast` driver renders with llvmpipe into dumb buffers on `card0`, which is how GL
-compositors run on simpledrm. `phone-hyprland` sets `AQ_DRM_DEVICES=/dev/dri/card0`,
-`MESA_LOADER_DRIVER_OVERRIDE=kms_swrast`, `GALLIUM_DRIVER=llvmpipe`, `LIBGL_ALWAYS_SOFTWARE=1`,
-`AQ_NO_MODIFIERS=1` and `LIBSEAT_BACKEND=seatd`. Each can be overridden from the environment.
+GBM takes its software path (`kms_swrast` + llvmpipe, dumb buffers on `card0`) and Hyprland
+renders through EGL on GBM with it. Checked on the phone on 2026-09-29: Hyprland 0.56.2,
+aquamarine 0.15.1, Mesa 26.2.3, 750x1334 at scale 2, foot drawn, the KMS plane scanning out
+Hyprland's buffer (`/sys/kernel/debug/dri/0/state`: `allocated by = Hyprland`).
+
+`phone-hyprland` sets `GBM_ALWAYS_SOFTWARE=1`, `GALLIUM_DRIVER=llvmpipe`,
+`LIBGL_ALWAYS_SOFTWARE=1`, `AQ_DRM_DEVICES=/dev/dri/card0`, `AQ_NO_MODIFIERS=1`,
+`LIBSEAT_BACKEND=seatd`, unsets `MESA_LOADER_DRIVER_OVERRIDE`, and preloads
+`/usr/lib/phone-tk/aq-simpledrm.so` (`PHONE_AQ_SHIM` picks another copy).
 `PHONE_NO_WATCHDOG=1` runs `Hyprland` directly instead of `start-hyprland`, and `--fg` runs it in
 the foreground.
+
+Two things were broken, and why:
+- `MESA_LOADER_DRIVER_OVERRIDE=kms_swrast` (the first version of the launcher) made Hyprland
+  abort with SIGABRT in `CHyprOpenGLImpl::initEGL`. The override loads `kms_swrast` as if it
+  were a hardware driver. EGL on GBM then looks for a render node to pair with `card0`, finds
+  none, and `eglInitialize` fails with `DRI2: failed to get compatible render device`.
+  With `GBM_ALWAYS_SOFTWARE=1` instead, GBM opens `kms_swrast` as a software driver and EGL
+  doesn't need a render node.
+- aquamarine still tries to build its own EGL device-platform renderer on each GPU. Mesa lists
+  only the software EGL device, which has no DRM file (`eglQueryDeviceStringEXT` returns
+  `EGL_BAD_PARAMETER`), so `CDRMRenderer::attempt` fails. With a single GPU,
+  `updateSecondaryRendererState` retries `initMgpu()` on every commit: it reopens the node,
+  creates a new GBM device, fails again, and logs 7 lines per frame. aquamarine already skips
+  this renderer for evdi (KMS with no EGL renderer). The shim (`tools/userland/shim/aq-simpledrm.c`,
+  cross-built by `build-rootfs.sh` with host clang + lld) makes `drmGetVersion()` report
+  `simpledrm` as `evdi`, only when libaquamarine calls it, so `rendererRequired = false`. The log
+  then says `with driver evdi`, which is expected. The upstream fix is to treat `simpledrm` like
+  `evdi` in aquamarine `src/backend/drm/DRM.cpp`. Hyprland itself never used that renderer.
+
+Measured on the phone (Hyprland plus two foot windows, one running `top -d 1`): Hyprland RSS
+about 225 MB (about 108 MB of it shared, mostly llvm-libs), foot 13 MB each, 562 MB still
+available. CPU is 0% when idle, and about 4.5% of the system with one update per second.
+Without the shim that load cost 2.0 s of Hyprland CPU per 20 s, and with it 1.6 s.
 
 `~/.config/hypr/hyprland.lua` (from `/etc/skel`): the preferred mode at scale 2 (375x667
 logical), with animations, blur, shadows and rounding off, Xwayland off, software cursor,
 `foot` started at launch, SUPER+Return and SUPER+W.
 
-What might go wrong, and what to try:
-- aquamarine refuses a device without a render node: check the log for `renderer`/`EGL`. Try
-  unsetting `MESA_LOADER_DRIVER_OVERRIDE`, and check `EGL_PLATFORM=gbm`.
-- Frame rate is low: expect a few fps on two cores. `misc.vfr` is on by default, so an idle
-  screen doesn't redraw.
+Notes:
+- `hyprctl` over SSH needs `HYPRLAND_INSTANCE_SIGNATURE` for the running instance. That's the
+  newest directory in `/run/user/1000/hypr` (`ls -t | head -1`); crashed runs leave old ones.
+- With `start-hyprland` the file log stays empty. `hyprctl rollinglog` shows the recent log.
 - A Lua config error shows up as a banner: `hyprctl configerrors` over SSH.
+- Harmless log noise: `failed to parse edid`, `Couldn't get the gamma_size prop`, and one
+  `Cannot commit when a page-flip is awaiting` at the first modeset.
 
 ## Kernel asks (for the integration config)
 
@@ -238,6 +271,7 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/packages.txt`, `assume-installed.txt` | | the package set and the deps left out on purpose |
 | `tools/userland/pacman-alarm.conf` | laptop | aarch64 pacman config (mirror.archlinuxarm.org) |
 | `tools/userland/overlay/` | | files copied into the root (networkd, sshd, units, iwd, foot, Hyprland config, `phone-hyprland`) |
+| `tools/userland/shim/aq-simpledrm.c` | phone (LD_PRELOAD) | stops aquamarine's per-frame EGL renderer retry on simpledrm; built by `build-rootfs.sh` |
 | `tools/userland/check-rootfs.sh` | laptop | 16K ELF/allocator scan, library resolution, qemu smoke tests |
 | `tools/userland/mk-initramfs.sh` | laptop | builds `initramfs-userland.gz` |
 | `tools/userland/test-switch-sim.sh` | laptop | PID 1 switch_root rehearsal with the ramdisk's own busybox |

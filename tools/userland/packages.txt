@@ -14,6 +14,7 @@ mesa                 # EGL/GLES with llvmpipe / kms_swrast (pulls llvm-libs)
 hyprland
 libei                # Hyprland links libeis.so.1 but only lists it via xorg-xwayland
 foot                 # CPU-rendered Wayland terminal, cheap on llvmpipe
+grim                 # screenshots over SSH (proof the compositor draws)
 ttf-jetbrains-mono
 zram-generator       # compressed swap in RAM (CONFIG_ZRAM=y)
 busybox              # nc/telnetd for testkit/phone.sh after switch_root

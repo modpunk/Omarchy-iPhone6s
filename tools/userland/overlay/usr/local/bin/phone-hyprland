@@ -6,14 +6,23 @@
 set -eu
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-seatd}"
-# simpledrm is KMS-only (no render node): Mesa renders with llvmpipe into
-# dumb buffers via its kms_swrast driver.
+# simpledrm is KMS-only (no render node). GBM_ALWAYS_SOFTWARE makes Mesa's GBM
+# take its software path (kms_swrast + llvmpipe, dumb buffers on card0), and
+# EGL on GBM then renders with it. Do NOT set MESA_LOADER_DRIVER_OVERRIDE=
+# kms_swrast: that loads kms_swrast as a "hardware" driver, EGL then looks for
+# a render node to pair with card0 and eglInitialize fails with "DRI2: failed
+# to get compatible render device" (Hyprland aborts in CHyprOpenGLImpl::initEGL).
+unset MESA_LOADER_DRIVER_OVERRIDE
 export AQ_DRM_DEVICES="${AQ_DRM_DEVICES:-/dev/dri/card0}"
-export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-kms_swrast}"
+export GBM_ALWAYS_SOFTWARE=1
 export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
 export LIBGL_ALWAYS_SOFTWARE=1
 export AQ_NO_MODIFIERS=1
 export XDG_SESSION_TYPE=wayland
+# aquamarine retries a (never available) EGL device renderer on every commit
+# on simpledrm; the shim stops that (source: tools/userland/shim/aq-simpledrm.c).
+shim="${PHONE_AQ_SHIM:-/usr/lib/phone-tk/aq-simpledrm.so}"
+[ -r "$shim" ] && export LD_PRELOAD="$shim${LD_PRELOAD:+:$LD_PRELOAD}"
 mkdir -p "$HOME/.cache"
 bin=Hyprland
 command -v start-hyprland >/dev/null 2>&1 && [ -z "${PHONE_NO_WATCHDOG:-}" ] && bin=start-hyprland

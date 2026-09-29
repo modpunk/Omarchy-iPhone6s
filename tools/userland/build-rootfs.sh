@@ -29,6 +29,7 @@ log() { printf '\033[1m[userland]\033[0m %s\n' "$*"; }
 die() { printf '[userland] ERROR: %s\n' "$*" >&2; exit 1; }
 
 if [ "$(id -u)" != 0 ]; then
+	command -v clang >/dev/null && command -v ld.lld >/dev/null || die "need clang and lld (pacman -S clang lld)"
 	[ -x "$QEMU" ] || die "need $QEMU (pacman -S qemu-user-static qemu-user-static-binfmt)"
 	[ -e /proc/sys/fs/binfmt_misc/qemu-aarch64 ] || die "binfmt_misc qemu-aarch64 not registered"
 	grep -q "^$(id -un):" /etc/subuid || die "no /etc/subuid range for $(id -un)"
@@ -111,6 +112,11 @@ stage_config() {
 	# busybox applets that Arch lacks (phone.sh push needs nc).
 	mkdir -p "$ROOT/usr/lib/phone-tk/bin"
 	for a in nc microcom xxd; do ln -sf /usr/bin/busybox "$ROOT/usr/lib/phone-tk/bin/$a"; done
+	# LD_PRELOAD shim for Hyprland on simpledrm (see shim/aq-simpledrm.c), cross-built
+	# with the host clang against the rootfs libc (the rootfs has no compiler).
+	clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -fuse-ld=lld -Wall \
+		-o "$ROOT/usr/lib/phone-tk/aq-simpledrm.so" "$HERE/shim/aq-simpledrm.c" "$ROOT/usr/lib/libc.so.6" \
+		|| die "building shim/aq-simpledrm.c needs host clang + lld"
 	in_root /usr/bin/busybox telnetd --help 2>&1 | grep -qi telnet || die "ALARM busybox lacks telnetd"
 	in_root /usr/bin/busybox nc --help 2>&1 | grep -qi 'nc\|netcat' || die "ALARM busybox lacks nc"
 
