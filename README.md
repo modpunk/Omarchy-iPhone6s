@@ -68,6 +68,8 @@ kit/reload.sh        kexec a new kernel + DTB without DFU (kit/fast-reload/: loa
 testkit/             phone.sh / phone.py (safe live-test access), kbuild.sh (out-of-tree modules),
                      dtbo_loader (apply DT overlays at runtime), hello (vermagic check), overlays/
 tools/               Apple device-tree (ADT) parsers
+tools/userland/      Arch Linux ARM RAM userland (systemd, sshd, Hyprland) + switch_root kit,
+                     see docs/userland.md
 patches/<driver>/    git format-patch series against HoolockLinux/linux 6831bc701
 docs/                hardware inventory, first-boot log, driver notes, contributing guide
 ```

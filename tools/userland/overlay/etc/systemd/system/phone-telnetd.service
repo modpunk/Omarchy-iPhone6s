@@ -1,0 +1,15 @@
+# Dev only: passwordless root telnet on the USB link, so testkit/phone.sh
+# (phone.py talks telnet to 172.16.42.1:23) keeps working after switch_root.
+# Same exposure as the HoolockLinux ramdisk. Disable with:
+#   systemctl disable --now phone-telnetd
+[Unit]
+Description=Root telnet on the USB link for testkit/phone.sh
+After=systemd-networkd.service
+
+[Service]
+ExecStart=/usr/bin/busybox telnetd -F -b 172.16.42.1:23 -l /usr/lib/phone-tk/telnet-shell
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

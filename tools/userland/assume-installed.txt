@@ -1,0 +1,11 @@
+# Dependencies deliberately NOT installed (pacman --assume-installed).
+xorg-xwayland        # no X11 apps planned; Hyprland runs with xwayland disabled
+hyprland-guiutils    # dialog helpers (hyprtoolkit); not needed headless/phone
+binutils             # only pulled by libmakepkg-dropins (makepkg), 51 MB
+linux-api-headers    # kernel headers for compiling
+libasan
+liblsan
+libtsan
+libubsan
+libgfortran
+libobjc

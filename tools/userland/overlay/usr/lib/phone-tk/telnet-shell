@@ -1,0 +1,7 @@
+#!/bin/sh
+# Login shell for phone-telnetd: Arch tools first, busybox applets (nc, ...)
+# as a fallback so testkit/phone.sh push/run work unchanged.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/bin:/usr/lib/phone-tk/bin
+export HOME=/root PS1='[6s] # '
+cd /
+exec /usr/bin/busybox sh
