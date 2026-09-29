@@ -1,0 +1,7 @@
+#!/bin/bash
+# omarchy:hidden=true
+# The phone runs the Omarchy Phone shell, not omarchy-shell (Omarchy's desktop
+# QuickShell). Omarchy scripts call omarchy-shell to refresh its widgets after
+# doing their real work; this stand-in answers those calls with success so
+# `set -e` scripts (omarchy-menu-timezone, ...) finish. Nothing is drawn.
+exit 0

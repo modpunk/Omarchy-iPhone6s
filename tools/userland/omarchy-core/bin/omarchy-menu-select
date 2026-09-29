@@ -1,0 +1,41 @@
+#!/bin/bash
+# omarchy:summary=Pick one option from a menu (phone: fzf)
+# Phone version of Omarchy's omarchy-menu-select: same arguments and output,
+# but the picker is fzf in the terminal (upstream summons the omarchy-shell
+# menu plugin, which the phone doesn't run). Outside a terminal it opens a
+# foot window for the pick.
+#   omarchy-menu-select <prompt> [option...] [-- menu args...]
+# Options are read from stdin when none are given. An option may be
+# "<glyph><TAB><label>[<TAB><subtext>]"; the glyph is shown, never returned.
+set -euo pipefail
+(( $# >= 1 )) || { echo "Usage: omarchy-menu-select <prompt> [option...] [-- menu args...]" >&2; exit 1; }
+prompt="$1"; shift
+options=()
+while (( $# > 0 )); do
+  [[ $1 == "--" ]] && break   # --width/--maxheight: sizing for the desktop menu
+  options+=("$1"); shift
+done
+if (( ${#options[@]} == 0 )) && [[ ! -t 0 ]]; then mapfile -t options; fi
+(( ${#options[@]} > 0 )) || { echo "Usage: omarchy-menu-select <prompt> [option...]" >&2; exit 1; }
+
+if [[ ! -t 1 && ! -t 2 ]] || [[ -n ${OMARCHY_MENU_SELECT_WINDOW:-} ]]; then
+  # No terminal to draw in (called from a key binding): pick in a foot window.
+  out=$(mktemp); trap 'rm -f "$out"' EXIT
+  printf '%s\n' "${options[@]}" > "$out.in"
+  foot --app-id=omarchy-menu --title="$prompt" bash -c \
+    'omarchy-menu-select "$1" < "$2" > "$3"' _ "$prompt" "$out.in" "$out" </dev/null || true
+  rm -f "$out.in"
+  [[ -s $out ]] && cat "$out" || exit 1
+  exit 0
+fi
+
+# fzf shows glyph+label(+subtext); the hidden first field is the row index.
+sel=$(for i in "${!options[@]}"; do
+        o=${options[$i]}
+        if [[ $o == *$'\t'* ]]; then printf '%s\t%s\n' "$i" "${o//$'\t'/  }"; else printf '%s\t%s\n' "$i" "$o"; fi
+      done | fzf --delimiter=$'\t' --with-nth=2.. --layout=reverse --info=inline-right \
+               --no-multi --header="$prompt" --prompt='  ' --pointer='▌' --color=16) || exit 1
+o=${options[${sel%%$'\t'*}]}
+if [[ $o == *$'\t'*$'\t'* ]]; then o=${o#*$'\t'}; printf '%s\n' "$o"   # label<TAB>subtext
+elif [[ $o == *$'\t'* ]]; then printf '%s\n' "${o#*$'\t'}"             # label
+else printf '%s\n' "$o"; fi

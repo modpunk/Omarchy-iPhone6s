@@ -1,0 +1,38 @@
+{
+  // Which rows of Omarchy's menu (default/omarchy/omarchy-menu.jsonc) the phone
+  // shows, read by the phone's omarchy-menu. {} keeps Omarchy's row; fields
+  // override it (null drops a field); ids Omarchy doesn't have are phone rows.
+  // Anything not listed here is hidden: most of the desktop menu drives
+  // omarchy-shell, packages, or hardware the phone doesn't have.
+  // Actions run in the menu's terminal, so TUIs (bluetoothctl, passwd) work.
+
+  "style": {},
+  "style.theme": {"action": "theme=$(omarchy-theme-list | omarchy-menu-select Theme) && omarchy-theme-set \"$theme\""},
+  "style.font": {"provider": null, "action": "font=$(omarchy-font-list | omarchy-menu-select 'Terminal font') && omarchy-font-set \"$font\""},
+
+  "setup": {},
+  "setup.bluetooth": {"icon": "󰂯", "label": "Bluetooth", "action": "bluetoothctl"},
+
+  "update": {},
+  "update.timezone": {},
+  "update.process": {},
+  "update.process.shell": {"label": "Phone shell"},
+  "update.password": {},
+  "update.password.user": {"action": "passwd"},
+
+  "trigger": {},
+  "trigger.capture": {},
+  "trigger.capture.screenshot": {"action": "setsid -f omarchy-core-screenshot"},
+  "trigger.toggle": {},
+  "trigger.toggle.notifications": {"label": "Silent mode", "action": "ophone-ctl silent"},
+
+  "learn": {},
+  "learn.keybindings": {"action": "omarchy-menu-keybindings"},
+
+  "about": {"action": "omarchy-core-about"},
+
+  // No suspend, reboot or shutdown: the rootfs lives in RAM, and coming back
+  // means a DFU boot and a fresh push from the laptop.
+  "system": {"label": "System"},
+  "system.lock": {}
+}

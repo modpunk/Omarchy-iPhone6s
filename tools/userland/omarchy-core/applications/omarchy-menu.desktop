@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Omarchy
+Comment=Omarchy menu: theme, font, timezone, Bluetooth, keybindings
+Exec=omarchy-menu summon
+Terminal=false
+Categories=Settings;

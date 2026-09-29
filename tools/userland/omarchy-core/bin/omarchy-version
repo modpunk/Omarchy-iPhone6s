@@ -1,0 +1,5 @@
+#!/bin/bash
+# omarchy:summary=Show the Omarchy version these files came from
+# Phone version of Omarchy's omarchy-version: the phone has no omarchy
+# package, so report the Omarchy release this image's files came from.
+cat "${OMARCHY_CORE:-/usr/share/omarchy-core}/OMARCHY_VERSION"

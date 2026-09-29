@@ -1,0 +1,6 @@
+#!/bin/bash
+# Full-screen screenshot with grim once the menu window has closed.
+sleep 0.6
+dir="${XDG_PICTURES_DIR:-$HOME/Pictures}"; mkdir -p "$dir"
+f="$dir/screenshot-$(date +%Y%m%d-%H%M%S).png"
+grim "$f" && omarchy-notification-send -g 󰄀 "Screenshot saved" "$f"

@@ -1,0 +1,3 @@
+# Arch Linux ARM packages the omarchy-core stage adds (on top of packages.txt).
+fzf     # the picker behind the phone's omarchy-menu and omarchy-menu-select
+jq      # Omarchy scripts parse JSON with it (the omarchy dispatcher, notification-send)
