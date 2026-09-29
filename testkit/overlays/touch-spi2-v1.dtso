@@ -1,0 +1,36 @@
+/dts-v1/;
+/plugin/;
+/*
+ * iPhone 6s live-test overlay: spi2 (Apple S5L SPI @ 0x20a088000, AIC 190)
+ * with a liveness-probe child for the multitouch controller.
+ * Raw phandles from the running DT: aic = 0x01, clkref = 0x05,
+ * pinctrl_ap = 0x1f, ps_spi2 = 0xf039 (added live by fnd_phandle_v1.ko).
+ * SCK/MOSI/MISO (GPIO 41-43) are already in peripheral function 1 (iBoot).
+ */
+/ {
+	fragment@0 {
+		target-path = "/soc";
+		__overlay__ {
+			spi@20a088000 {
+				compatible = "apple,s8000-spi", "apple,s5l-spi";
+				reg = <0x2 0x0a088000 0x0 0x4000>;
+				interrupt-parent = <0x01>;
+				interrupts = <0 190 4>;
+				clocks = <0x05>;
+				power-domains = <0xf039>;
+				cs-gpios = <0x1f 44 1>;
+				#address-cells = <1>;
+				#size-cells = <0>;
+				status = "okay";
+
+				touchscreen@0 {
+					compatible = "hoolock,z2probe-v1";
+					reg = <0>;
+					spi-max-frequency = <8000000>;
+					reset-gpios = <0x1f 75 1>;
+					irq-gpios = <0x1f 142 0>;
+				};
+			};
+		};
+	};
+};
