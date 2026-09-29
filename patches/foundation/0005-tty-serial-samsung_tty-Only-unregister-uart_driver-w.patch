@@ -1,0 +1,96 @@
+From e9f755a16e238a66acecfe474f77ed77ec80c9d8 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:14:55 -0500
+Subject: [PATCH 5/5] tty: serial: samsung_tty: Only unregister uart_driver
+ with the last port
+
+All ports share s3c24xx_uart_drv, which the first probe registers.
+s3c24xx_serial_remove() however unregisters it on every port removal,
+freeing drv->state while the remaining ports, including the console,
+are still registered. The next removal then dereferences the NULL
+drv->state:
+
+  Unable to handle kernel NULL pointer dereference at virtual address 0000000000000740
+  pc : mutex_lock+0x30/0x4c
+  lr : serial_core_unregister_port+0x6c/0x20c
+   uart_remove_one_port+0xc/0x14
+   s3c24xx_serial_remove+0x1c/0x30
+   ...
+   of_platform_device_destroy+0x9c/0xec
+   of_overlay_remove+0x1f8/0x274
+
+This was hit on an iPhone 6s (apple,s5l-uart) by removing a DT overlay
+that had added three UART nodes. Ports that survive such a removal are
+left pointing at freed uart_state.
+
+Count the registered ports and only unregister the driver when the last
+one goes away.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/tty/serial/samsung_tty.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/tty/serial/samsung_tty.c b/drivers/tty/serial/samsung_tty.c
+index 63d0232dffc2..cdc31cc7d42c 100644
+--- a/drivers/tty/serial/samsung_tty.c
++++ b/drivers/tty/serial/samsung_tty.c
+@@ -32,6 +32,7 @@
+ #include <linux/ioport.h>
+ #include <linux/math.h>
+ #include <linux/module.h>
++#include <linux/mutex.h>
+ #include <linux/of.h>
+ #include <linux/platform_device.h>
+ #include <linux/serial.h>
+@@ -1926,6 +1927,15 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
+ 
+ static int probe_index;
+ 
++/*
++ * All ports share s3c24xx_uart_drv. It is registered by the first probe and
++ * must only be unregistered once the last port is gone; unregistering it
++ * while other ports (e.g. the console) are still registered frees their
++ * uart_state under them.
++ */
++static DEFINE_MUTEX(s3c24xx_uart_drv_lock);
++static unsigned int s3c24xx_uart_drv_ports;
++
+ static inline const struct s3c24xx_serial_drv_data *
+ s3c24xx_get_driver_data(struct platform_device *pdev)
+ {
+@@ -2022,13 +2032,17 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	if (!s3c24xx_uart_drv.state) {
++	mutex_lock(&s3c24xx_uart_drv_lock);
++	if (!s3c24xx_uart_drv_ports) {
+ 		ret = uart_register_driver(&s3c24xx_uart_drv);
+ 		if (ret < 0) {
++			mutex_unlock(&s3c24xx_uart_drv_lock);
+ 			pr_err("Failed to register Samsung UART driver\n");
+ 			return ret;
+ 		}
+ 	}
++	s3c24xx_uart_drv_ports++;
++	mutex_unlock(&s3c24xx_uart_drv_lock);
+ 
+ 	dev_dbg(&pdev->dev, "%s: adding port\n", __func__);
+ 	uart_add_one_port(&s3c24xx_uart_drv, &ourport->port);
+@@ -2055,7 +2069,10 @@ static void s3c24xx_serial_remove(struct platform_device *dev)
+ 	if (port)
+ 		uart_remove_one_port(&s3c24xx_uart_drv, port);
+ 
+-	uart_unregister_driver(&s3c24xx_uart_drv);
++	mutex_lock(&s3c24xx_uart_drv_lock);
++	if (!--s3c24xx_uart_drv_ports)
++		uart_unregister_driver(&s3c24xx_uart_drv);
++	mutex_unlock(&s3c24xx_uart_drv_lock);
+ }
+ 
+ /* UART power management code */
+-- 
+2.55.0
+

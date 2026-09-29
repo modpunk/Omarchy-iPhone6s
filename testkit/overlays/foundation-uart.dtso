@@ -1,0 +1,61 @@
+// SPDX-License-Identifier: GPL-2.0
+/*
+ * Live test: bind apple,s5l-uart to uart3, uart4 and uart6 on the running 6s DT
+ * (uart1/uart5 are covered by the bluetooth/battery overlays).
+ * Needs testkit/fnd_phandle loaded first (ps_uartN phandles 0xf03c..0xf041).
+ * Raw phandles: AIC 0x1, clkref 0x5.
+ *
+ * WARNING: on kernel 7.3.0-rc1-g6831bc701a6c #2, do NOT remove this overlay
+ * (or unbind samsung-uart). s3c24xx_serial_remove() unregisters the shared
+ * uart_driver, which oopses and leaves every other ttySAC port on freed
+ * state. Fixed by patches/foundation/0005; until that kernel is booted,
+ * leave the overlay applied until reboot.
+ */
+/dts-v1/;
+/plugin/;
+
+/ {
+	fragment@0 {
+		target-path = "/soc";
+		__overlay__ {
+			#address-cells = <2>;
+			#size-cells = <2>;
+
+
+			serial@20a0cc000 {
+				compatible = "apple,s5l-uart";
+				reg = <0x2 0x0a0cc000 0x0 0x4000>;
+				reg-io-width = <4>;
+				interrupt-parent = <0x1>;
+				interrupts = <0 195 4>;	/* AIC_IRQ n LEVEL_HIGH */
+				clocks = <0x5>, <0x5>;		/* clkref */
+				clock-names = "uart", "clk_uart_baud0";
+				power-domains = <0xf03e>;	/* ps_uart3 via fnd_phandle_v1 */
+			};
+
+			serial@20a0d0000 {
+				compatible = "apple,s5l-uart";
+				reg = <0x2 0x0a0d0000 0x0 0x4000>;
+				reg-io-width = <4>;
+				interrupt-parent = <0x1>;
+				interrupts = <0 196 4>;	/* AIC_IRQ n LEVEL_HIGH */
+				clocks = <0x5>, <0x5>;		/* clkref */
+				clock-names = "uart", "clk_uart_baud0";
+				power-domains = <0xf03f>;	/* ps_uart4 via fnd_phandle_v1 */
+			};
+
+
+			serial@20a0d8000 {
+				compatible = "apple,s5l-uart";
+				reg = <0x2 0x0a0d8000 0x0 0x4000>;
+				reg-io-width = <4>;
+				interrupt-parent = <0x1>;
+				interrupts = <0 198 4>;	/* AIC_IRQ n LEVEL_HIGH */
+				clocks = <0x5>, <0x5>;		/* clkref */
+				clock-names = "uart", "clk_uart_baud0";
+				power-domains = <0xf041>;	/* ps_uart6 via fnd_phandle_v1 */
+			};
+
+		};
+	};
+};

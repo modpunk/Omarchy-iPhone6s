@@ -1,0 +1,127 @@
+From d92d3fdb6082dbb8cabe816523f92da63ad72cf0 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:10:28 -0500
+Subject: [PATCH 1/5] arm64: dts: apple: s800-0-3: Add uart1, uart3-uart6 nodes
+
+Describe the remaining UARTs of the A9 (S8000/S8003) that the Apple
+device tree lists for the iPhone 6s: uart1 (Bluetooth), uart3 (NFC),
+uart4 (WLAN sideband), uart5 (gas gauge, HDQ) and uart6 (iAP). There is
+no uart2 on this SoC's ADT.
+
+Addresses and interrupts come from the Apple ADT (arm-io/uartN reg and
+interrupts). The power domains were matched through the ADT PMGR
+"devices" table: clock-gate ids 0x51/0x53/0x54/0x55/0x56 resolve to
+PMGR offsets 0x801e0/0x801f0/0x801f8/0x80200/0x80208, which are the
+existing ps_uart1/3/4/5/6 nodes.
+
+No pinctrl: iBoot already muxes TX/RX (and CTS where present) to the
+UART function, as for serial0 and the other Apple SoCs' extra UARTs. The
+RTS pins of uart1/uart4 are left as GPIOs by iBoot (Apple drives them
+by hand via function-rts); consumers that want hardware flow control
+must add their own pinctrl.
+
+All nodes stay disabled here; boards enable the ones they use. Add
+serialN aliases so the ports get stable ttySACN names.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../arm64/boot/dts/apple/s800-0-3-common.dtsi |  5 ++
+ arch/arm64/boot/dts/apple/s800-0-3.dtsi       | 65 +++++++++++++++++++
+ 2 files changed, 70 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/apple/s800-0-3-common.dtsi b/arch/arm64/boot/dts/apple/s800-0-3-common.dtsi
+index ad31117983f4..f35cedb98b4c 100644
+--- a/arch/arm64/boot/dts/apple/s800-0-3-common.dtsi
++++ b/arch/arm64/boot/dts/apple/s800-0-3-common.dtsi
+@@ -13,6 +13,11 @@ / {
+ 	aliases {
+ 		ausbphy0 = &ausbphy0;
+ 		serial0 = &serial0;
++		serial1 = &serial1;
++		serial3 = &serial3;
++		serial4 = &serial4;
++		serial5 = &serial5;
++		serial6 = &serial6;
+ 	};
+ 
+ 	chosen {
+diff --git a/arch/arm64/boot/dts/apple/s800-0-3.dtsi b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+index fc7dc7c5ba3a..97e6dc81644a 100644
+--- a/arch/arm64/boot/dts/apple/s800-0-3.dtsi
++++ b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+@@ -89,6 +89,71 @@ serial0: serial@20a0c0000 {
+ 			status = "disabled";
+ 		};
+ 
++		serial1: serial@20a0c4000 {
++			compatible = "apple,s5l-uart";
++			reg = <0x2 0x0a0c4000 0x0 0x4000>;
++			reg-io-width = <4>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 193 IRQ_TYPE_LEVEL_HIGH>;
++			/* Use the bootloader-enabled clocks for now. */
++			clocks = <&clkref>, <&clkref>;
++			clock-names = "uart", "clk_uart_baud0";
++			power-domains = <&ps_uart1>;
++			status = "disabled";
++		};
++
++		serial3: serial@20a0cc000 {
++			compatible = "apple,s5l-uart";
++			reg = <0x2 0x0a0cc000 0x0 0x4000>;
++			reg-io-width = <4>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 195 IRQ_TYPE_LEVEL_HIGH>;
++			/* Use the bootloader-enabled clocks for now. */
++			clocks = <&clkref>, <&clkref>;
++			clock-names = "uart", "clk_uart_baud0";
++			power-domains = <&ps_uart3>;
++			status = "disabled";
++		};
++
++		serial4: serial@20a0d0000 {
++			compatible = "apple,s5l-uart";
++			reg = <0x2 0x0a0d0000 0x0 0x4000>;
++			reg-io-width = <4>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 196 IRQ_TYPE_LEVEL_HIGH>;
++			/* Use the bootloader-enabled clocks for now. */
++			clocks = <&clkref>, <&clkref>;
++			clock-names = "uart", "clk_uart_baud0";
++			power-domains = <&ps_uart4>;
++			status = "disabled";
++		};
++
++		serial5: serial@20a0d4000 {
++			compatible = "apple,s5l-uart";
++			reg = <0x2 0x0a0d4000 0x0 0x4000>;
++			reg-io-width = <4>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 197 IRQ_TYPE_LEVEL_HIGH>;
++			/* Use the bootloader-enabled clocks for now. */
++			clocks = <&clkref>, <&clkref>;
++			clock-names = "uart", "clk_uart_baud0";
++			power-domains = <&ps_uart5>;
++			status = "disabled";
++		};
++
++		serial6: serial@20a0d8000 {
++			compatible = "apple,s5l-uart";
++			reg = <0x2 0x0a0d8000 0x0 0x4000>;
++			reg-io-width = <4>;
++			interrupt-parent = <&aic>;
++			interrupts = <AIC_IRQ 198 IRQ_TYPE_LEVEL_HIGH>;
++			/* Use the bootloader-enabled clocks for now. */
++			clocks = <&clkref>, <&clkref>;
++			clock-names = "uart", "clk_uart_baud0";
++			power-domains = <&ps_uart6>;
++			status = "disabled";
++		};
++
+ 		i2c0: i2c@20a110000 {
+ 			compatible = "apple,s8000-i2c", "apple,i2c";
+ 			reg = <0x2 0x0a110000 0x0 0x1000>;
+-- 
+2.55.0
+
