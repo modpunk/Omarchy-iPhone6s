@@ -1,0 +1,3 @@
+obj-m += bt6s_recon_v1.o
+# bt6s_pwr_v1 WRITES the PMIC (GPIO 8 cfg 0x910: 0x80 -> 0x81). Needs explicit approval.
+obj-m += bt6s_pwr_v1.o

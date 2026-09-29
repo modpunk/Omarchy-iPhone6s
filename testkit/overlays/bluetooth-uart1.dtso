@@ -1,0 +1,59 @@
+/dts-v1/;
+/plugin/;
+/*
+ * iPhone 6s Bluetooth live-test overlay (fresh boot, apply ONCE, never remove).
+ * Needs: fnd_phandle (ps_uart1 phandle 0xf03c), apple_pmic_gpio_t1.ko loaded,
+ * firmware at /lib/firmware/brcm/BCM.apple,n71.hcd (running kernel has no
+ * BCM4350C5 UART entry, so btbcm asks for the generic name).
+ * Raw phandles from /proc/device-tree: aic 0x01, clkref 0x05, pinctrl_ap 0x1f.
+ * Running DT pmic@74 still has #size-cells = <1>.
+ */
+/ {
+	fragment@0 {
+		target-path = "/soc/i2c@20a110000/pmic@74";
+		__overlay__ {
+			gpio@900 {
+				compatible = "apple,antigua-pmic-gpio";
+				reg = <0x900 0x22>;
+				gpio-controller;
+				#gpio-cells = <2>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc/pinctrl@20f100000";
+		__overlay__ {
+			bt6s-uart1-pins {
+				/* APPLE_PINMUX(24, 1) TX, APPLE_PINMUX(26, 1) RTS */
+				pinmux = <0x10018>, <0x1001a>;
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/soc";
+		__overlay__ {
+			serial@20a0c4000 {
+				compatible = "apple,s5l-uart";
+				reg = <0x2 0x0a0c4000 0x0 0x4000>;
+				reg-io-width = <4>;
+				interrupt-parent = <0x01>;
+				interrupts = <0 193 4>;
+				clocks = <0x05>, <0x05>;
+				clock-names = "uart", "clk_uart_baud0";
+				power-domains = <0xf03c>;
+				pinctrl-0 = <&{/fragment@1/__overlay__/bt6s-uart1-pins}>;
+				pinctrl-names = "default";
+				status = "okay";
+
+				bluetooth {
+					/* stand-in for brcm,bcm4350-bt (same match data) */
+					compatible = "brcm,bcm4349-bt";
+					shutdown-gpios = <&{/fragment@0/__overlay__/gpio@900} 8 0>;
+					device-wakeup-gpios = <0x1f 71 0>;
+				};
+			};
+		};
+	};
+};

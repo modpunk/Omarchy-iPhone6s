@@ -1,0 +1,83 @@
+From 826d6d23cb2671fc935c0aeb6cde1d970f205905 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:20:48 -0500
+Subject: [PATCH 6/6] arm64: dts: apple: s800x-6s: Add Bluetooth
+
+The Bluetooth half of the BCM4350 combo chip (USI 339S00043 module) is on
+uart1 with RTS/CTS. Its REG_ON line is PMU GPIO 8 and BT_WAKE is AP GPIO
+71, as described by Apple's device tree (/arm-io/uart1/bluetooth
+function-power_enable and function-bt_wake). The UART TX and RTS pins need
+their UART function selected; iBoot leaves RTS as a GPIO.
+
+Add the PMIC GPIO controller, the pin configuration and the controller
+node. The BD address lives in syscfg and is exposed by iBoot in the Apple
+DT as local-mac-address; a bluetooth0 alias lets the loader copy it.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/apple/s800x-6s.dtsi | 37 +++++++++++++++++++++++++
+ 1 file changed, 37 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/apple/s800x-6s.dtsi b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+index c22bf4b79e47..53d4d7fc54cd 100644
+--- a/arch/arm64/boot/dts/apple/s800x-6s.dtsi
++++ b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+@@ -11,6 +11,11 @@
+ / {
+ 	chassis-type = "handset";
+ 
++	aliases {
++		/* Lets the loader fill in local-bd-address from the Apple DT */
++		bluetooth0 = &bluetooth0;
++	};
++
+ 	gpio-keys {
+ 		compatible = "gpio-keys";
+ 
+@@ -66,6 +71,13 @@ pmic@74 {
+ 		#address-cells = <1>;
+ 		#size-cells = <0>;
+ 
++		pmic_gpio: gpio@900 {
++			compatible = "apple,antigua-pmic-gpio";
++			reg = <0x900>;
++			gpio-controller;
++			#gpio-cells = <2>;
++		};
++
+ 		rtc@500 {
+ 			compatible = "apple,antigua-pmic-rtc";
+ 			reg = <0x500>;
+@@ -90,3 +102,28 @@ rtc_offset: rtc-offset@4 {
+ 		};
+ 	};
+ };
++
++&pinctrl_ap {
++	bt_uart1_pins: bt-uart1-pins {
++		/* TX and RTS; iBoot leaves RX and CTS in their UART function */
++		pinmux = <APPLE_PINMUX(24, 1)>,
++			 <APPLE_PINMUX(26, 1)>;
++	};
++};
++
++&serial1 {
++	pinctrl-0 = <&bt_uart1_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	/* Broadcom BCM4350 (USI 339S00043 module), Bluetooth half */
++	bluetooth0: bluetooth {
++		compatible = "brcm,bcm4350-bt";
++		/* REG_ON: ADT /arm-io/uart1/bluetooth function-power_enable */
++		shutdown-gpios = <&pmic_gpio 8 GPIO_ACTIVE_HIGH>;
++		/* BT_WAKE: ADT function-bt_wake */
++		device-wakeup-gpios = <&pinctrl_ap 71 GPIO_ACTIVE_HIGH>;
++		/* Filled in by the loader from the Apple DT, if it knows how */
++		local-bd-address = [00 00 00 00 00 00];
++	};
++};
+-- 
+2.55.0
+

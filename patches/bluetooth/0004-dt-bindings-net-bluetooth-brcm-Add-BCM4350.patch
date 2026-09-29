@@ -1,0 +1,42 @@
+From 2b091eee6ece51b4af68c553e7d1615b5822aa5c Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:20:48 -0500
+Subject: [PATCH 4/6] dt-bindings: net: bluetooth: brcm: Add BCM4350
+
+Add a compatible for the Bluetooth part of the Broadcom BCM4350 combo
+chip, as used on the Apple iPhone 6s over UART.
+
+Also reference the common Bluetooth controller schema so local-bd-address
+is accepted. hci_bcm already honours it through the core when the
+controller only reports its default address, and the iPhone 6s needs it
+because the real address is provided by the bootloader.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../devicetree/bindings/net/bluetooth/brcm,bluetooth.yaml       | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/Documentation/devicetree/bindings/net/bluetooth/brcm,bluetooth.yaml b/Documentation/devicetree/bindings/net/bluetooth/brcm,bluetooth.yaml
+index 95501e858e6f..e88b2cbd146c 100644
+--- a/Documentation/devicetree/bindings/net/bluetooth/brcm,bluetooth.yaml
++++ b/Documentation/devicetree/bindings/net/bluetooth/brcm,bluetooth.yaml
+@@ -31,6 +31,7 @@ properties:
+           - brcm,bcm43540-bt
+           - brcm,bcm4335a0
+           - brcm,bcm4349-bt
++          - brcm,bcm4350-bt
+           - cypress,cyw4373a0-bt
+           - infineon,cyw55572-bt
+ 
+@@ -126,6 +127,7 @@ dependencies:
+   brcm,requires-autobaud-mode: [ shutdown-gpios ]
+ 
+ allOf:
++  - $ref: /schemas/net/bluetooth/bluetooth-controller.yaml#
+   - $ref: /schemas/serial/serial-peripheral-props.yaml#
+   - if:
+       not:
+-- 
+2.55.0
+
