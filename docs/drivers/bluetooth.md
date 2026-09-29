@@ -3,7 +3,8 @@
 > **Depends on:** the `foundation` series (PR #3, `patches/foundation/0001..0005`: uart1 node
 > `serial1`, PMIC `#size-cells = <0>`, samsung_tty remove fix). Apply foundation first, then
 > `patches/bluetooth/*.patch`. Checked: both series `git am` cleanly onto `6831bc701`, and the
-> result is identical to the `6s/bluetooth` branch.
+> result is identical to the `6s/bluetooth` branch. 0007 (LE advertising report fix) is a
+> follow-up on top of 0001..0006; the same `git am` check was re-done with it included.
 
 ## What
 
@@ -44,12 +45,14 @@ Format of a `function-*` GPIO reference: `<phandle> 'GPIO' <pin> <flags>`.
 | 0004 | dt-bindings: net: bluetooth: brcm: Add BCM4350 | + `$ref` bluetooth-controller (allows `local-bd-address`) |
 | 0005 | Bluetooth: hci_bcm: Add BCM4350 support | `brcm,bcm4350-bt`, same match data as bcm4349 |
 | 0006 | arm64: dts: apple: s800x-6s: Add Bluetooth | pmic gpio node, uart1 pinmux, `&serial1` + `bluetooth0` |
+| 0007 | Bluetooth: btbcm: Mask flag bits in BCM4350C5 LE advertising report types | new `HCI_QUIRK_FIXUP_LE_ADV_REPORT_TYPE`, see [below](#le-advertising-reports-patch-0007) |
 
 Build checks on `6s/bluetooth` (foundation + these): full `Image` + `dtbs` build (LLVM, 0
 warnings), `W=1` clean for the three touched C files, `dt_binding_check` clean for the three
 touched bindings, `CHECK_DTBS=y` for `s8000-n71.dtb` / `s8003-n71m.dtb` shows no findings in the
 new nodes. `checkpatch --strict`: only the `Co-Authored-By` trailer form and the MAINTAINERS
-reminder for the new files.
+reminder for the new files. 0007: `W=1` clean for `btbcm.c` and `hci_event.c`; `checkpatch
+--strict` 0 errors, only the two `Co-Authored-By` form warnings.
 
 ## Status
 
@@ -57,8 +60,14 @@ reminder for the new files.
 loaded, `hci0` came up, powered on and an LE scan returned nearby devices. That boot was later
 found to have a corrupted shared UART driver state (another overlay was removed, which freed the
 samsung `uart_driver` while uart1 was bound), so treat the result as **encouraging but to be
-re-done on a clean boot**. The patches themselves (PMIC GPIO driver, BCM4350 entries, DT) are
-**build-tested only**; they have never run on the phone. Pairing a keyboard was not tried.
+re-done on a clean boot**. At that point the patches themselves (PMIC GPIO driver, BCM4350
+entries, DT) were **build-tested only** and pairing a keyboard was not tried.
+
+**Update (0007):** the full series has since booted on the phone as part of the `6s/fast-reload`
+kernel (integration + fast-reload + 0007, all built in), and a BLE keyboard (EKM04 Mini) paired
+in about 3 s once 0007 was in; without it pairing timed out. See
+[LE advertising reports](#le-advertising-reports-patch-0007). This update does not re-verify
+the other points below (PMIC GPIO pad status, host wake, coexistence, typing through HOGP).
 
 ## Evidence (live phone, kernel `7.3.0-rc1-g6831bc701a6c #2`, stock drivers)
 
@@ -120,8 +129,92 @@ one-shot test module):
    `/dev/uhid` does not exist (`CONFIG_UHID` is off), so **BLE (HOGP) keyboards cannot work** with
    the current config; classic HID keyboards go through the built-in `CONFIG_BT_HIDP`.
 
-Not tested at all: the PMIC GPIO driver, `brcm,bcm4350-bt`, the new firmware name, the in-tree DT,
-`local-bd-address`, pairing, HID input, suspend/`bt_wake`, host wake, BT/WLAN coexistence.
+Not tested at all (as of this first bring-up): the PMIC GPIO driver, `brcm,bcm4350-bt`, the new
+firmware name, the in-tree DT, `local-bd-address`, pairing, HID input, suspend/`bt_wake`, host wake,
+BT/WLAN coexistence. Pairing a BLE keyboard has since worked with 0007, see the next section.
+
+## LE advertising reports (patch 0007)
+
+### Root cause
+
+The BCM4350C5 (with Apple's patchram, build 0825) sets bits 4 and 5 of the event type in legacy
+HCI LE Advertising Report events. Legacy report types are only 0x00..0x04, so
+`hci_le_adv_report_evt()` -> `process_adv_report()` logs
+`unknown advertising packet type: 0x%02x` (rate limited, from `process_adv_report()`) and drops the report. Among the dropped
+reports are the keyboard's connectable advertisements (ADV_IND). BlueZ connects to a device only
+when it sees one of those during the passive scan, so pairing timed out with "Connect Failed";
+it only worked by luck, when an unflagged report happened to get through.
+
+Observed types and what the low three bits give:
+
+| Reported | Low 3 bits | Legacy type |
+|---|---|---|
+| 0x10, 0x20 | 0x00 | ADV_IND (connectable undirected) |
+| 0x12 | 0x02 | ADV_SCAN_IND |
+| 0x13, 0x23 | 0x03 | ADV_NONCONN_IND |
+| 0x14, 0x24 | 0x04 | SCAN_RSP |
+
+Why this is flag bits on top of the legacy type and not the extended-report encoding: 0x20, 0x23
+and 0x24 have no meaning as extended event types (legacy PDUs there must have bit 4 set, and
+bit 5 is data status), and the same low bits recur under bit 4 and under bit 5 (0x13/0x23,
+0x14/0x24), which is what independent flags look like. Reading the low bits as the type (0x10 ->
+ADV_IND) is also what made BlueZ connect and the pairing succeed.
+
+### Evidence (live phone)
+
+Kernel: `6s/fast-reload` build (`7.3.0-rc1-g6831bc701a6c`), BlueZ in the Alpine chroot. Numbers
+from the main session's review of the phone logs:
+
+- Before 0007: 466 `unknown advertising packet type` drops per boot, types 0x10, 0x12, 0x13,
+  0x14, 0x20, 0x23, 0x24. Pairing the EKM04 Mini BLE keyboard timed out with "Connect Failed".
+- After 0007: 0 drops; pairing completed in 3 s.
+
+Raw evidence (2026-09-29, iPhone 6s N71; Bluetooth addresses redacted).
+
+Before 0007, kernel `#2 SMP PREEMPT Tue Sep 29 09:51:02 CDT 2026` (6s/fast-reload without the fix):
+
+```
+[ 1868.114669] Bluetooth: hci0: unknown advertising packet type: 0x23
+[ 1868.177981] Bluetooth: hci0: unknown advertising packet type: 0x20
+[ 1868.180821] Bluetooth: hci0: unknown advertising packet type: 0x24
+```
+
+Per-type counts over that boot: 0x10 ×70, 0x12 ×1, 0x13 ×108, 0x14 ×63, 0x20 ×74, 0x23 ×94,
+0x24 ×56 (466 total). `btmon` during a pairing attempt shows BlueZ adding the keyboard to the
+accept list and then giving up after 60 s without ever issuing LE Create Connection:
+
+```
+@ MGMT Event: Device Added (0x001a) plen 8             {0x0002} [hci0] 3.277872
+< HCI Command: LE Add Device To Acc.. (0x08|0x0011) plen 7  #35 [hci0] 3.280993
+@ MGMT Event: Connect Failed (0x000d) plen 8          {0x0002} [hci0] 63.277933
+@ MGMT Event: Device Removed (0x001b) plen 7          {0x0002} [hci0] 63.297106
+```
+
+After 0007, kernel `#3 SMP PREEMPT Tue Sep 29 13:07:49 CDT 2026`: `dmesg | grep -c "unknown
+advertising packet type"` is 0, and the same keyboard pairs in 3 seconds:
+
+```
+18:17:24 found XX:XX:XX:XX:XX:XX, pairing
+18:17:27 done XX:XX:XX:XX:XX:XX
+[  544.662679] hid-generic 0005:3554:F605.0001: input: BLUETOOTH HID v1.00 Keyboard [EKM04 Mini] on XX:XX:XX:XX:XX:XX
+```
+
+### Fix
+
+`HCI_QUIRK_FIXUP_LE_ADV_REPORT_TYPE` (new, `include/net/bluetooth/hci.h`): when set,
+`hci_le_adv_report_evt()` passes only `type & 0x07` to `process_adv_report()`. Values 5..7 stay
+invalid and are still dropped. `btbcm_initialize()` sets the quirk for subver 0x6607
+(BCM4350C5) when the bus is not USB; USB BCM4350C5 dongles share the subver but were not
+tested, so they are left alone.
+
+### Open questions
+
+- What bits 4 and 5 mean (advertising channel? a vendor filter/accept-list hit?). Unknown.
+  BlueTool's LE advertising report parser in the iOS rootfs would show whether Apple's stack
+  masks or decodes them.
+- Whether the ROM firmware (build 0000) does the same or only Apple's patchram: no LE scan was
+  run before the patchram load.
+- ADV_DIRECT_IND (low bits 001) was never observed, so that mapping is untested.
 
 ## Firmware
 
@@ -192,7 +285,8 @@ without the human's go-ahead.
    `timeout 25 chroot /tmp/alp btmgmt --index 0 find`. Record dmesg + output.
 6. Keyboard (classic, not BLE): run `bluetoothctl` in the chroot, `agent on`, `default-agent`,
    `scan on`, `pair <kbd>`, `trust`, `connect`; check `dmesg` for an `input:` line and
-   `/dev/input/event*`. BLE keyboards need `CONFIG_UHID=y` first.
+   `/dev/input/event*`. BLE keyboards need `CONFIG_UHID=y` (set in the `6s/fast-reload` config)
+   and patch 0007.
 7. If step 4 fails, do not remove the overlay; report and reboot.
 
 ## Known issues / next steps
@@ -202,7 +296,10 @@ without the human's go-ahead.
 - Only 115200 baud tested. Faster needs `max-speed` (<= 1.5 Mbaud with the 24 MHz clkref) and a
   test; 3 Mbaud needs the real UART clock.
 - `local-bd-address` is a zero placeholder until a loader fills it from the ADT.
-- Enable `CONFIG_UHID` for BLE keyboards; ship BlueZ in the ramdisk.
+- Ship BlueZ in the ramdisk. (`CONFIG_UHID=y` is set in the `6s/fast-reload` build config;
+  typing through HOGP was not part of the 0007 evidence.)
+- 0007 upstream: the quirk is fine in principle but needs a btmon trace and a narrower trigger
+  (see "Open questions") before it goes to linux-bluetooth.
 - Calibration blobs (`bluetooth-tx-calibration` / `-rx-calibration` in the runtime ADT) are not
   sent to the chip; iOS probably does. Scanning worked without them.
 

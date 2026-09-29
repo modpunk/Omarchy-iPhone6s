@@ -1,0 +1,78 @@
+From cf366a6528fdafd5c2d4d625b0cd470096c327b4 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 13:08:17 -0500
+Subject: [PATCH] Bluetooth: btbcm: Mask flag bits in BCM4350C5 LE advertising
+ report types
+
+The BCM4350C5 (iPhone 6s) reports legacy LE advertising events with bits
+4 and 5 of the event type set (0x10, 0x12, 0x13, 0x14, 0x20, 0x23, 0x24).
+process_adv_report() treats those as unknown types and drops them, which
+includes the connectable advertisements of bonded devices, so pairing and
+reconnecting to BLE keyboards only works when an unflagged report happens
+to arrive. Add HCI_QUIRK_FIXUP_LE_ADV_REPORT_TYPE to use only the low
+three bits of the type, and set it for BCM4350C5 on UART.
+
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/bluetooth/btbcm.c   | 4 ++++
+ include/net/bluetooth/hci.h | 8 ++++++++
+ net/bluetooth/hci_event.c   | 7 ++++++-
+ 3 files changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/bluetooth/btbcm.c b/drivers/bluetooth/btbcm.c
+index 376c008f75fc..dbef159d7525 100644
+--- a/drivers/bluetooth/btbcm.c
++++ b/drivers/bluetooth/btbcm.c
+@@ -627,6 +627,10 @@ int btbcm_initialize(struct hci_dev *hdev, bool *fw_load_done, bool use_autobaud
+ 		}
+ 	}
+ 
++	/* BCM4350C5 sets extra flag bits in legacy LE advertising report types */
++	if (hdev->bus != HCI_USB && subver == 0x6607)
++		hci_set_quirk(hdev, HCI_QUIRK_FIXUP_LE_ADV_REPORT_TYPE);
++
+ 	bt_dev_info(hdev, "%s (%3.3u.%3.3u.%3.3u) build %4.4u",
+ 		    hw_name ? hw_name : "BCM", (subver & 0xe000) >> 13,
+ 		    (subver & 0x1f00) >> 8, (subver & 0x00ff), rev & 0x0fff);
+diff --git a/include/net/bluetooth/hci.h b/include/net/bluetooth/hci.h
+index 1641d879dbda..c4446605dff3 100644
+--- a/include/net/bluetooth/hci.h
++++ b/include/net/bluetooth/hci.h
+@@ -375,6 +375,14 @@ enum {
+ 	 */
+ 	HCI_QUIRK_BROKEN_READ_PAGE_SCAN_TYPE,
+ 
++	/* When this quirk is set, only the low three bits of the event type
++	 * in legacy LE Advertising Reports are used. Some Broadcom controllers
++	 * (BCM4350C5) set bits 4 and 5 there as well, which would otherwise
++	 * make every such report look like an unknown type and get dropped,
++	 * including connectable advertisements from bonded devices.
++	 */
++	HCI_QUIRK_FIXUP_LE_ADV_REPORT_TYPE,
++
+ 	__HCI_NUM_QUIRKS,
+ };
+ 
+diff --git a/net/bluetooth/hci_event.c b/net/bluetooth/hci_event.c
+index 2f5e21ff9752..787376ea0fa8 100644
+--- a/net/bluetooth/hci_event.c
++++ b/net/bluetooth/hci_event.c
+@@ -6468,8 +6468,13 @@ static void hci_le_adv_report_evt(struct hci_dev *hdev, void *data,
+ 		hci_store_wake_reason(hdev, &info->bdaddr, info->bdaddr_type);
+ 
+ 		if (info->length <= max_adv_len(hdev)) {
++			u8 type = info->type;
++
++			if (hci_test_quirk(hdev, HCI_QUIRK_FIXUP_LE_ADV_REPORT_TYPE))
++				type &= 0x07;
++
+ 			rssi = info->data[info->length];
+-			process_adv_report(hdev, info->type, &info->bdaddr,
++			process_adv_report(hdev, type, &info->bdaddr,
+ 					   info->bdaddr_type, NULL, 0,
+ 					   HCI_ADV_PHY_1M, 0, rssi,
+ 					   info->data, info->length, false,
+-- 
+2.55.0
+
