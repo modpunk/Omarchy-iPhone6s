@@ -17,8 +17,8 @@ else
 	echo ratelimit > /proc/sys/kernel/printk_devkmsg
 	[ -e /proc/sys/kernel/hotplug ] && echo > /proc/sys/kernel/hotplug  # no mdev in the new root
 	kill -TERM -1 2>/dev/null; sleep 2; kill -KILL -1 2>/dev/null; sleep 1
-	# The gadget stays bound in the kernel; systemd remounts configfs itself.
-	umount /config 2>/dev/null
+	# /config (configfs) stays where it is: switch_root skips other filesystems
+	# when it empties the old root, the gadget stays bound, systemd mounts its own.
 	for _d in dev proc sys run; do
 		mkdir -p "$_nr/$_d"
 		mount --move "/$_d" "$_nr/$_d" 2>/dev/null || mount -o move "/$_d" "$_nr/$_d"

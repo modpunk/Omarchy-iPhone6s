@@ -39,7 +39,7 @@ contains the Broadcom BT firmware, your SSH public keys and the sshd host keys.
 
 | file | size | what |
 |---|---|---|
-| `rootfs.tar.xz` | 147 MiB (153,930,092 B) | the userland; md5 in `rootfs.tar.xz.md5` |
+| `rootfs.tar.xz` | 147 MiB (153,923,784 B) | the userland; md5 in `rootfs.tar.xz.md5` |
 | unpacked | 788 MiB | in tmpfs on the phone (`SIZE=1400m` cap); 269 packages, list in `rootfs.packages.txt` |
 | `initramfs-userland.gz` | 2.6 MiB | stock HoolockLinux ramdisk + patched `/init` + `userland-switch.sh` |
 | `check-report.txt` | | output of `check-rootfs.sh` (16K scan, missing libraries, smoke tests) |
@@ -88,8 +88,11 @@ Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone 
 6. **Checks:**
    ```sh
    ssh root@172.16.42.1 'systemctl --failed; journalctl -b -p warning --no-pager | tail -40;
-     free -m; swapon; bluetoothctl list; wpctl status | head; ls -l /dev/dri'
+     free -m; swapon; bluetoothctl list; ls -l /dev/dri'
+   ssh omarchy@172.16.42.1 'systemctl --user --failed; wpctl status | head'
    ```
+   The host key is the same on every build (`ssh-hostkeys/`). If ssh says the key for
+   172.16.42.1 changed (an old entry from other tests), run `ssh-keygen -R 172.16.42.1`.
 7. **Hyprland** (the phone has no keyboard or touch input yet, so start it over SSH; seatd hands
    out the seat):
    ```sh
@@ -128,7 +131,7 @@ autologin root) and `phone.sh ping` (phone-telnetd). Boot messages go to the fra
 | terminal | foot 1.28 | renders on the CPU with pixman, so it's cheap on llvmpipe. Alacritty/Ghostty would render through GL on llvmpipe |
 | font | ttf-jetbrains-mono | Omarchy's font family, without the 100+ MB Nerd Font build |
 | memory | zram-generator: `zram0` = min(RAM/2, 1 GiB), zstd | tmpfs pages can swap out to zram, so cold parts of the rootfs stay compressed |
-| user | `omarchy` / `omarchy`, groups wheel seat video input audio render, passwordless sudo | root password locked |
+| user | `omarchy` / `omarchy`, groups wheel seat video input audio render, passwordless sudo, lingering | root password locked. Linger keeps `/run/user/1000` and the PipeWire user units alive after the SSH command that started Hyprland exits |
 | misc | `LANG=C.UTF-8` (built into glibc, no locale-gen), UTC, volatile journal (48 MB), fixed machine-id, `/usr/lib/clock-epoch` | firstboot and networkd-wait-online are masked |
 
 Removed to save space: man, doc, info and gtk-doc pages, translations, `/usr/include`, `*.a`,

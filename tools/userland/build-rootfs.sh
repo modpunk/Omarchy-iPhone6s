@@ -130,6 +130,9 @@ stage_config() {
 	mkdir -p "$ROOT/home/$USERNAME/.config"
 	cp -a "$ROOT/etc/skel/.config/." "$ROOT/home/$USERNAME/.config/"
 	chown -R "$uid:$gid" "$ROOT/home/$USERNAME"
+	# Linger (= loginctl enable-linger): user@.service, /run/user/UID and the
+	# PipeWire user units outlive the SSH command that starts phone-hyprland.
+	install -d -m 755 "$ROOT/var/lib/systemd/linger"; : > "$ROOT/var/lib/systemd/linger/$USERNAME"
 
 	log "ssh host keys (kept in $OUT/ssh-hostkeys so fingerprints survive rebuilds)"
 	if [ ! -s "$OUT/ssh-hostkeys/etc/ssh/ssh_host_ed25519_key" ]; then
