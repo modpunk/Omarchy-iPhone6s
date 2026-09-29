@@ -1,0 +1,24 @@
+# Apple / Broadcom binaries and IPSW contents: NEVER commit these.
+*.ipsw
+*.im4p
+*.dmg
+kc.bin
+*-apple-dt.bin
+*.hcd
+brcmfmac*
+*.txt.nvram
+firmware/
+
+# Kernel build outputs
+*.ko
+*.o
+*.cmd
+*.mod
+*.mod.c
+*.dtbo
+*.dtb
+Image*
+modules.order
+Module.symvers
+build/
+out/

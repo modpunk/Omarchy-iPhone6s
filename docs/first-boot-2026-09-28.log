@@ -1,0 +1,339 @@
+[    0.000000] Booting Linux on physical CPU 0x0000000000 [0x612f0040]
+[    0.000000] Linux version 7.3.0-rc1-g6831bc701a6c (modpunk@Milton) (clang version 22.1.8, LLD 22.1.8) #2 SMP PREEMPT Mon Sep 28 19:04:24 CDT 2026
+[    0.000000] KASLR enabled
+[    0.000000] random: crng init done
+[    0.000000] Machine model: Apple iPhone 6s (Samsung)
+[    0.000000] efi: UEFI not found.
+[    0.000000] OF: reserved mem: 0x000000087da08000..0x000000087da0bfff (16 KiB) map non-reusable flash@87da08000
+[    0.000000] OF: reserved mem: 0x0000000804374000..0x000000080439bfff (160 KiB) map non-reusable flash@804374000
+[    0.000000] cma: Reserved 16 MiB at 0x0000000800000000
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000800000000-0x000000087da0bfff]
+[    0.000000]   DMA32    empty
+[    0.000000]   Normal   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000800000000-0x000000087da03fff]
+[    0.000000]   node   0: [mem 0x000000087da08000-0x000000087da0bfff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000800000000-0x000000087da0bfff]
+[    0.000000] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 2429 pages in unavailable ranges
+[    0.000000] percpu: Embedded 8 pages/cpu s92312 r8192 d30568 u131072
+[    0.000000] pcpu-alloc: s92312 r8192 d30568 u131072 alloc=8*16384
+[    0.000000] pcpu-alloc: [0] 0 [0] 1 
+[    0.000000] Detected PIPT I-cache on CPU0
+[    0.000000] CPU features: detected: Spectre-v2
+[    0.000000] CPU features: detected: Spectre-v4
+[    0.000000] CPU features: detected: Spectre-BHB
+[    0.000000] CPU features: kernel page table isolation forced ON by KASLR
+[    0.000000] CPU features: detected: Kernel page table isolation (KPTI)
+[    0.000000] alternatives: applying boot alternatives
+[    0.000000] Kernel command line: console=tty0 hl_rd=shell
+[    0.000000] Unknown kernel command line parameters "hl_rd=shell", will be passed to user space.
+[    0.000000] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes
+[    0.000000] Dentry cache hash table entries: 262144 (order: 7, 2097152 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 131072 (order: 6, 1048576 bytes, linear)
+[    0.000000] software IO TLB: SWIOTLB bounce buffer size adjusted to 1MB
+[    0.000000] software IO TLB: area num 2.
+[    0.000000] software IO TLB: mapped [mem 0x000000087cb80000-0x000000087cd80000] (2MB)
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 128642
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+[    0.000000] rcu: Preemptible hierarchical RCU implementation.
+[    0.000000] rcu:     RCU event tracing is enabled.
+[    0.000000] rcu:     RCU restricting CPUs from NR_CPUS=8 to nr_cpu_ids=2.
+[    0.000000]  Trampoline variant of Tasks RCU enabled.
+[    0.000000]  Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+[    0.000000] RCU Tasks: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] Root IRQ handler: aic_handle_irq
+[    0.000000] Root FIQ handler: aic_handle_fiq
+[    0.000000] irq_apple_aic: Kernel running in EL1, mapping interrupts
+[    0.000000] irq_apple_aic: Initialized with 288/1024 IRQs * 1/1 die(s), 7 FIQs, 32 vIPIs
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns
+[    0.000000] arch_timer: cp15 timer running at 24.00MHz (virt).
+[    0.000000] clocksource: arch_sys_counter: mask: 0xffffffffffffff max_cycles: 0x588fe9dc0, max_idle_ns: 440795202592 ns
+[    0.000000] sched_clock: 56 bits at 24MHz, resolution 41ns, wraps every 4398046511097ns
+[    0.000100] Console: colour dummy device 80x25
+[    0.000107] printk: legacy console [tty0] enabled
+[    0.000209] Calibrating delay loop (skipped), value calculated using timer frequency.. 48.00 BogoMIPS (lpj=24000)
+[    0.000216] pid_max: default: 32768 minimum: 301
+[    0.000321] Mount-cache hash table entries: 4096 (order: 1, 32768 bytes, linear)
+[    0.000330] Mountpoint-cache hash table entries: 4096 (order: 1, 32768 bytes, linear)
+[    0.000437] VFS: Finished mounting rootfs on nullfs
+[    0.001085] rcu: Hierarchical SRCU implementation.
+[    0.001089] rcu:     Max phase no-delay instances is 400.
+[    0.001159] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.001322] EFI services will not be available.
+[    0.001362] smp: Bringing up secondary CPUs ...
+[    0.001513] Detected PIPT I-cache on CPU1
+[    0.001545] CPU1: Booted secondary processor 0x0000000001 [0x612f0040]
+[    0.001598] smp: Brought up 1 node, 2 CPUs
+[    0.001606] SMP: Total of 2 processors activated.
+[    0.001609] CPU: All CPU(s) started at EL1
+[    0.001612] CPU features: detected: 32-bit EL0 Support
+[    0.001632] alternatives: applying system-wide alternatives
+[    0.001807] Memory: 1982224K/2058272K available (11328K kernel code, 1756K rwdata, 4720K rodata, 1216K init, 435K bss, 39616K reserved, 32768K cma-reserved)
+[    0.001985] devtmpfs: initialized
+[    0.003099] posixtimers hash table entries: 1024 (order: 0, 16384 bytes, linear)
+[    0.003121] futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+[    0.003180] 2G module region forced by RANDOMIZE_MODULE_REGION_FULL
+[    0.003183] 0 pages in range for non-PLT usage
+[    0.003185] 129832 pages in range for PLT usage
+[    0.003303] DMI: not present or invalid.
+[    0.003411] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.003699] DMA: preallocated 256 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.003715] audit: initializing netlink subsys (disabled)
+[    0.003769] audit: type=2000 audit(0.003:1): state=initialized audit_enabled=0 res=1
+[    0.003886] thermal_sys: Registered thermal governor 'step_wise'
+[    0.003904] cpuidle: using governor menu
+[    0.003941] hw-breakpoint: found 6 breakpoint and 4 watchpoint registers.
+[    0.003966] ASID allocator initialised with 128 entries
+[    0.008591] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.008597] HugeTLB: 0 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.008601] HugeTLB: registered 32.0 MiB page size, pre-allocated 0 pages
+[    0.008604] HugeTLB: 0 KiB vmemmap can be freed for a 32.0 MiB page
+[    0.008608] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.008610] HugeTLB: 0 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.009147] fbcon: Taking over console
+[    0.009161] iommu: Default domain type: Translated
+[    0.009165] iommu: DMA domain TLB invalidation policy: strict mode
+[    0.010117] usbcore: registered new interface driver usbfs
+[    0.010132] usbcore: registered new interface driver hub
+[    0.010142] usbcore: registered new device driver usb
+[    0.010731] Bluetooth: Core ver 2.22
+[    0.010742] NET: Registered PF_BLUETOOTH protocol family
+[    0.010745] Bluetooth: HCI device and connection manager initialized
+[    0.010751] Bluetooth: HCI socket layer initialized
+[    0.010755] Bluetooth: L2CAP socket layer initialized
+[    0.010760] Bluetooth: SCO socket layer initialized
+[    0.010837] vgaarb: loaded
+[    0.012093] clocksource: Switched to clocksource arch_sys_counter
+[    0.012239] VFS: Disk quotas dquot_6.6.0
+[    0.012254] VFS: Dquot-cache hash table entries: 2048 (16384 bytes)
+[    0.016076] NET: Registered PF_INET protocol family
+[    0.016146] IP idents hash table entries: 32768 (order: 4, 262144 bytes, linear)
+[    0.016667] tcp_listen_portaddr_hash hash table entries: 1024 (order: 0, 16384 bytes, linear)
+[    0.016677] Table-perturb hash table entries: 65536 (order: 4, 262144 bytes, linear)
+[    0.016683] TCP established hash table entries: 16384 (order: 3, 131072 bytes, linear)
+[    0.016712] TCP bind hash table entries: 16384 (order: 5, 524288 bytes, linear)
+[    0.016799] TCP: Hash tables configured (established 16384 bind 16384)
+[    0.016824] UDP hash table entries: 1024 (order: 2, 65536 bytes, linear)
+[    0.016863] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[    0.016877] PCI: CLS 0 bytes, default 64
+[    0.017014] Unpacking initramfs...
+[    0.019034] Freeing initrd memory: 3296K
+[    0.019572] Initialise system trusted keyrings
+[    0.019693] workingset: timestamp_bits=46 (anon: 41) max_order=17 bucket_order=0 (anon: 0)
+[    0.020120] cryptd: max_cpu_qlen set to 1000
+[    0.032597] NET: Registered PF_ALG protocol family
+[    0.032614] Key type asymmetric registered
+[    0.032618] Asymmetric key parser 'x509' registered
+[    0.032637] io scheduler mq-deadline registered
+[    0.032641] io scheduler kyber registered
+[    0.037895] 20a0c0000.serial: ttySAC0 MMIO32:0x000000020a0c0000 (irq = 35, base_baud = 0) is a APPLE S5L
+[    0.038594] [drm] Initialized simpledrm 1.0.0 for 87e75c000.framebuffer on minor 0
+[    0.040367] Console: switching to colour frame buffer device 93x83
+[    0.043129] simple-framebuffer 87e75c000.framebuffer: [drm] fb0: simpledrmdrmfb frame buffer device
+[    0.045723] loop: module loaded
+[    0.050254] zram: Added device: zram0
+[    0.051466] tun: Universal TUN/TAP device driver, 1.6
+[    0.052140] gadgetfs: USB Gadget filesystem, version 24 Aug 2004
+[    0.052181] file system registered
+[    0.052202] UDC core: g_multi: couldn't find an available UDC
+[    0.052445] Driver for 1-wire Dallas network protocol.
+[    0.052819] device-mapper: ioctl: 4.50.0-ioctl (2025-04-28) initialised: dm-devel@lists.linux.dev
+[    0.052837] Bluetooth: HCI UART driver ver 2.3
+[    0.052852] Bluetooth: HCI UART protocol H4 registered
+[    0.052895] Bluetooth: HCI UART protocol Broadcom registered
+[    0.053252] usbcore: registered new interface driver usbhid
+[    0.053267] usbhid: USB HID core driver
+[    0.053987] hw perfevents: enabled with apple_twister_pmu PMU driver, 8 (0,000000ff) counters available
+[    0.054161]  cs_system_cfg: CoreSight Configuration manager initialised
+[    0.055162] NET: Registered PF_INET6 protocol family
+[    0.055582] Segment Routing with IPv6
+[    0.055600] In-situ OAM (IOAM) with IPv6
+[    0.055640] sit: IPv6, IPv4 and MPLS over IPv4 tunneling driver
+[    0.055808] NET: Registered PF_PACKET protocol family
+[    0.055824] Bluetooth: BNEP (Ethernet Emulation) ver 1.3
+[    0.055838] Bluetooth: BNEP filters: protocol multicast
+[    0.055851] Bluetooth: BNEP socket layer initialized
+[    0.055865] Bluetooth: HIDP (Human Interface Emulation) ver 1.2
+[    0.055879] Bluetooth: HIDP socket layer initialized
+[    0.055902] Key type dns_resolver registered
+[    0.058172] registered taskstats version 1
+[    0.058248] Loading compiled-in X.509 certificates
+[    0.060715] zswap: loaded using pool zstd
+[    0.063654] dwc2 20c100000.usbdev: EPs: 9, dedicated fifos, 2056 entries in SPRAM
+[    0.065447] LUN: removable file: (no medium)
+[    0.065486] no file given for LUN0
+[    0.065518] printk: legacy console [ttyGS0] disabled
+[    0.065654] udc 20c100000.usbdev: failed to start g_multi: -22
+[    0.065690] g_multi gadget.0: probe with driver g_multi failed with error -22
+[    0.067655] OF: Bad cell count for /soc/i2c@20a110000/pmic@74
+[    0.067709] OF: Bad cell count for /soc/i2c@20a110000/pmic@74
+[    0.067799] OF: Bad cell count for /soc/i2c@20a110000/pmic@74
+[    0.067838] OF: Bad cell count for /soc/i2c@20a110000/pmic@74
+[    0.067977] OF: Bad cell count for /soc/i2c@20a110000/pmic@74
+[    0.070681] rtc-apple-pmic 20a110000.i2c:pmic@74:rtc@500: registered as rtc0
+[    0.071706] rtc-apple-pmic 20a110000.i2c:pmic@74:rtc@500: setting system clock to 2021-08-19T22:35:59 UTC (1629412559)
+[    0.072093] input: gpio-keys as /devices/platform/gpio-keys/input/input0
+[    0.072459] clk: Disabling unused clocks
+[    0.072469] PM: genpd: Disabling unused power domains
+[    0.072963] Freeing unused kernel memory: 1216K
+[    0.073022] Run /init as init process
+[    0.073035]   with arguments:
+[    0.073037]     /init
+[    0.073039]   with environment:
+[    0.073041]     HOME=/
+[    0.073042]     TERM=linux
+[    0.073044]     hl_rd=shell
+[    0.328193] syslogd started: BusyBox v1.38.0
+[    0.332751] [HL-rd]: Setup usb network
+[    0.337750] [HL-rd]:   Setting up USB gadget through configfs
+[    0.353207] configfs-gadget.g1 gadget.0: HOST MAC c2:ec:0f:21:f1:03
+[    0.353302] configfs-gadget.g1 gadget.0: MAC a2:82:7a:db:75:14
+[    0.362032] dwc2 20c100000.usbdev: bound driver configfs-gadget.g1
+[    0.379056] [HL-rd]: Starting unudhcpd with server ip 172.16.42.1, client ip: 172.16.42.2
+[    0.386301] [HL-rd]:   Using interface usb0
+[    0.389288] [HL-rd]:   Starting the DHCP daemon
+[    0.392005] [HL-rd]: Trying to start server with parameters: Server IP addr: 172.16.42.1:67, client IP addr: 172.16.42.2, interface: usb0
+[    0.422624] [HL-rd]: Entering debug shell
+[    0.445736] dwc2 20c100000.usbdev: bound driver configfs-gadget.g1
+[    0.651825] dwc2 20c100000.usbdev: new device is high-speed
+[    0.715810] dwc2 20c100000.usbdev: new device is high-speed
+[    0.777842] dwc2 20c100000.usbdev: new address 15
+===DEFER
+===DRV
+202220000.performance-controller -> 
+20a0c0000.serial -> samsung-uart
+20a110000.i2c -> i2c-apple
+20a110000.i2c:pmic@74:nvmem@5000 -> simple-mfd-nvmem
+20a110000.i2c:pmic@74:rtc@500 -> rtc-apple-pmic
+20c000030.phy -> phy-apple-ausb
+20c100000.usbdev -> dwc2
+20c900000.bus -> apple-usb-complex
+20e000000.power-management -> 
+20e000000.power-management:power-controller@80000 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80008 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80040 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80100 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80108 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80110 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80118 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80120 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80128 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80130 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80138 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80140 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80148 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80150 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80158 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80160 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80168 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80170 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80178 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80180 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80188 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80190 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80198 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801a0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801a8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801b0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801b8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801c0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801c8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801d0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801d8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801e0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801e8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801f0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@801f8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80200 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80208 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80210 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80218 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80220 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80228 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80230 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80238 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80240 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80248 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80250 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80258 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80260 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80268 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80270 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80278 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80280 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80288 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80290 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80298 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802a0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802a8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802b0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802b8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802c0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802c8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802d0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802d8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802e0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802e8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802f0 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@802f8 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80308 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80310 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80318 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80320 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80328 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80330 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80338 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80340 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@80400 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@88000 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@88008 -> apple-pmgr-pwrstate
+20e000000.power-management:power-controller@88010 -> apple-pmgr-pwrstate
+20e200080.backlight -> apple-dwi-bl
+20f100000.pinctrl -> apple-gpio-pinctrl
+2100f0000.pinctrl -> apple-gpio-pinctrl
+210200000.power-management -> 
+210200000.power-management:power-controller@80000 -> apple-pmgr-pwrstate
+210200000.power-management:power-controller@80008 -> apple-pmgr-pwrstate
+210200000.power-management:power-controller@80010 -> apple-pmgr-pwrstate
+210200000.power-management:power-controller@80040 -> apple-pmgr-pwrstate
+210200000.power-management:power-controller@80048 -> apple-pmgr-pwrstate
+210200000.power-management:power-controller@80050 -> apple-pmgr-pwrstate
+2102b0000.watchdog -> apple-watchdog
+804374000.flash -> phram
+87da08000.flash -> phram
+87e75c000.framebuffer -> simple-framebuffer
+gpio-keys -> gpio-keys
+pmu -> apple-m1-cpu-pmu
+smbios -> 
+soc -> simple-pm-bus
+timer -> 
+===INPUT
+I: Bus=0019 Vendor=0001 Product=0001 Version=0100
+N: Name="gpio-keys"
+P: Phys=gpio-keys/input0
+S: Sysfs=/devices/platform/gpio-keys/input/input0
+U: Uniq=
+H: Handlers=kbd event0 
+B: PROP=0
+B: EV=3
+B: KEY=100000000000 1e000000000000 0
+
+===FB
+[1;35m/dev/fb0[m
+
+/dev/dri:
+[1;35mcard0[m
+750,1334
+===BLK
+major minor  #blocks  name
+
+===PS
+~ # [6n

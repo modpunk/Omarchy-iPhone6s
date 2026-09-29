@@ -1,0 +1,43 @@
+# 6s live-test rules (every agent, no exceptions)
+
+The phone is ONE tethered iPhone 6s (N71, Samsung A9) running the HoolockLinux
+RAM ramdisk. If it crashes, only the human can bring it back (DFU buttons +
+sudo `./boot.sh pongo && ./boot.sh linux`). Treat every crash as expensive.
+
+1. Base kernel tree ~/Work/hoolock-iphone5s/linux is READ-ONLY. Never run make in
+   it except through `testkit/kbuild.sh <dir>` (M= build). Never commit/checkout there.
+   Its build is exactly what the phone runs (7.3.0-rc1-g6831bc701a6c #2); drifting it
+   breaks vermagic for everyone.
+2. Your code lives in your own git worktree of that repo:
+     git -C ~/Work/hoolock-iphone5s/linux worktree add .claude/worktrees/<name> -b 6s/<name>
+   Edit only files under that worktree. Full kernel/dtb builds use
+   `make O=$HOME/Work/hoolock-iphone5s/build/<name> ...` (copy linux/.config there first).
+3. Phone access ONLY through testkit/phone.sh:
+     phone.sh run '<cmd>'        read-only probes, any time (cat /proc/device-tree, /sys, dmesg)
+     phone.sh insmod x.ko        state-changing, takes the shared flock
+     phone.sh overlay x.dtbo     state-changing, takes the shared flock
+     phone.sh lock '<cmd>'       any other state-changing command (echo > sysfs bind/unbind, register pokes)
+   Hold the lock only while touching the phone, never while compiling.
+4. CONFIG_MODULE_UNLOAD is OFF. A module name loads once per boot. Every test
+   iteration needs a NEW module name AND a new platform driver name (suffix _v2, _v3…).
+   Hand a device to the new driver by unbinding the old one
+   (echo <dev> > /sys/bus/platform/drivers/<old>/unbind) then bind / driver_override.
+5. The running DT has NO __symbols__: overlays use `target-path = "/soc/..."`
+   and raw numeric phandles (read them from /proc/device-tree/<node>/phandle on the
+   phone). Remove overlays you are done with (echo <id> > /sys/class/misc/dtbo/remove).
+   Compile overlays with ~/Work/hoolock-iphone5s/linux/scripts/dtc/dtc -@ -I dts -O dtb.
+6. NEVER write to the NVMe/NAND (it holds iOS). Storage work is read-only: no
+   writes, no partitioning, no mkfs, block device must be read-only
+   (set_disk_ro / reject REQ_OP_WRITE) before it is ever exposed.
+7. No raw register pokes (devmem) to an unknown address; only addresses that come
+   from Apple's device tree for the block you own, and only reads unless you know
+   the write is safe.
+8. Health: if `phone.sh ping` fails for 60 s the phone has panicked or hung.
+   STOP phone testing, do not retry in a loop, note the last thing you loaded, and
+   report "phone down after <x>". Keep working on code / build-only verification.
+9. Never commit Apple or Broadcom binaries anywhere public: IPSW contents, *.im4p,
+   kernelcache, Apple ADT dumps (.bin), firmware (.hcd, brcmfmac*.bin, NVRAM,
+   touch firmware). Commit extraction scripts instead. Local copies go in
+   ~/Work/hoolock-iphone5s/firmware/ (gitignored, never in the public repo).
+10. The laptop firewall (ufw) blocks inbound; phone.sh pushes by connecting out to
+    an nc listener on the phone. Don't open ports on the laptop.

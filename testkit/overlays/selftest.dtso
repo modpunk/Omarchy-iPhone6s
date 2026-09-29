@@ -1,0 +1,14 @@
+/dts-v1/;
+/plugin/;
+/* No __symbols__ in the running DT: use target-path, raw phandles. */
+/ {
+	fragment@0 {
+		target-path = "/soc";
+		__overlay__ {
+			dtbo-selftest@0 {
+				compatible = "hoolock,dtbo-selftest";
+				status = "okay";
+			};
+		};
+	};
+};
