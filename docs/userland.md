@@ -245,6 +245,23 @@ Two things were broken, and why:
   `simpledrm` as `evdi`, only when libaquamarine calls it, so `rendererRequired = false`. The log
   then says `with driver evdi`, which is expected. The upstream fix is to treat `simpledrm` like
   `evdi` in aquamarine `src/backend/drm/DRM.cpp`. Hyprland itself never used that renderer.
+- The panel showed every frame 3 frames late: typing in foot, the 4th key made the 1st one
+  appear, and anything else that redrew pushed the screen one frame on. llvmpipe has no
+  `EGL_ANDROID_native_fence_sync` (`hyprctl systeminfo`: `Explicit sync: missing`), so
+  Hyprland's `CHyprGLRenderer::endRender` takes the implicit-sync path and only calls
+  `glFlush()`; llvmpipe rasterizes on its worker threads while the atomic commit goes in.
+  simpledrm has no scanout DMA: its plane update copies the dumb buffer into the firmware
+  framebuffer during the commit, so it copied what the buffer held one swapchain lap earlier
+  (the swapchain has 3 buffers). `shim/aq-commit-probe.c` (debug only) checksums the committed
+  buffer right before each commit and 50 ms after: with the old shim 187 of 192 commits
+  CHANGED, and each "before" sum equalled that buffer's "after" sum from 3 commits earlier.
+  Hyprland already `glFinish()`es for software renderers, but it detects them by the DRM
+  driver name, which is `simpledrm` here. The shim therefore also hands `drmGetVersion()`
+  calls made from the Hyprland executable itself the name `simpledrm-llvmpipe`, which sets
+  `isSoftware()`; with it, 290 of 290 commits (idle, and scripted typing into foot with
+  `wtype`) were already complete when they went in. `debug:vfr = false` only hid the lag by
+  redrawing at 60 Hz (141% CPU, 1.16 A). The upstream fix is for Hyprland to treat a llvmpipe
+  `GL_RENDERER` as software too.
 
 Measured on the phone (Hyprland plus two foot windows, one running `top -d 1`): Hyprland RSS
 about 225 MB (about 108 MB of it shared, mostly llvm-libs), foot 13 MB each, 562 MB still
@@ -369,7 +386,8 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/packages.txt`, `assume-installed.txt` | | the package set and the deps left out on purpose |
 | `tools/userland/pacman-alarm.conf` | laptop | aarch64 pacman config (mirror.archlinuxarm.org) |
 | `tools/userland/overlay/` | | files copied into the root (networkd, sshd, units, iwd, foot, Hyprland session config, `phone-hyprland`) |
-| `tools/userland/shim/aq-simpledrm.c` | phone (LD_PRELOAD) | stops aquamarine's per-frame EGL renderer retry on simpledrm; built by `build-rootfs.sh` |
+| `tools/userland/shim/aq-simpledrm.c` | phone (LD_PRELOAD) | stops aquamarine's per-frame EGL renderer retry on simpledrm and makes Hyprland `glFinish()` before each commit; built by `build-rootfs.sh` |
+| `tools/userland/shim/aq-commit-probe.c` | phone (LD_PRELOAD, debug only) | checksums each committed buffer before and after the commit, logs whether rendering was still in flight; built by hand |
 | `tools/userland/shim/pagesize16k.c` | laptop (qemu, test only) | makes `sysconf(_SC_PAGESIZE)` say 16 KiB, for the jemalloc/quickshell check |
 | `tools/userland/overlay/etc/skel/.config/hypr/` | phone | `hyprland.lua` (phone shell session), `plain.lua` (foot only) |
 | `tools/userland/check-rootfs.sh` | laptop | 16K ELF/allocator scan, library resolution, qemu smoke tests |
