@@ -41,3 +41,15 @@ sudo `./boot.sh pongo && ./boot.sh linux`). Treat every crash as expensive.
    ~/Work/hoolock-iphone5s/firmware/ (gitignored, never in the public repo).
 10. The laptop firewall (ufw) blocks inbound; phone.sh pushes by connecting out to
     an nc listener on the phone. Don't open ports on the laptop.
+11. (added after oops #2) NEVER remove an overlay whose nodes are bound to a driver,
+    and never unbind samsung-uart: of_overlay_remove on a bound apple,s5l-uart node
+    NULL-derefs in serial_core_unregister_port. Root cause: upstream
+    s3c24xx_serial_remove() calls uart_unregister_driver() on every port removal,
+    freeing state the other ttySAC ports still use (fix on the foundation branch;
+    until that kernel boots, one removal corrupts every UART port). Never remove an overlay that adds an
+    apple-pmgr-pwrstate provider (no .remove → genpd freed while registered).
+    Apply bus/power overlays ONCE per boot and keep them; iterate only on child nodes
+    and freshly named drivers. Removing is only OK for overlays that nothing bound to.
+12. Don't read kernel-image linear-map aliases (oops #1). The phone is tainted and
+    fragile now; prefer build-only verification for anything with an unproven
+    remove/teardown path.
