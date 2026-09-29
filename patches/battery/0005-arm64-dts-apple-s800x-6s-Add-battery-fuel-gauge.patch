@@ -1,4 +1,4 @@
-From 14602eec6361aac332aff3109e67e4722cdbb25a Mon Sep 17 00:00:00 2001
+From eb2836d66bac7f727e4e2112993774e4b89a25c8 Mon Sep 17 00:00:00 2001
 From: modpunk <27315771+modpunk@users.noreply.github.com>
 Date: Mon, 28 Sep 2026 21:18:06 -0500
 Subject: [PATCH 5/5] arm64: dts: apple: s800x-6s: Add battery fuel gauge

@@ -1,4 +1,4 @@
-From 8f936885e4313a10b3efc5c42f68a4b2eed04556 Mon Sep 17 00:00:00 2001
+From 4b6bfc0f032e85c93d172f07edeae52743574277 Mon Sep 17 00:00:00 2001
 From: modpunk <27315771+modpunk@users.noreply.github.com>
 Date: Mon, 28 Sep 2026 21:17:58 -0500
 Subject: [PATCH 3/5] mux: Add SN2400 charger HDQ line switch
@@ -18,8 +18,8 @@ Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
 ---
  drivers/mux/Kconfig  |  13 ++++
  drivers/mux/Makefile |   2 +
- drivers/mux/sn2400.c | 144 +++++++++++++++++++++++++++++++++++++++++++
- 3 files changed, 159 insertions(+)
+ drivers/mux/sn2400.c | 157 +++++++++++++++++++++++++++++++++++++++++++
+ 3 files changed, 172 insertions(+)
  create mode 100644 drivers/mux/sn2400.c
 
 diff --git a/drivers/mux/Kconfig b/drivers/mux/Kconfig
@@ -64,10 +64,10 @@ index 6e9fa47daf56..2175be4d2e7b 100644
 +obj-$(CONFIG_MUX_SN2400)	+= mux-sn2400.o
 diff --git a/drivers/mux/sn2400.c b/drivers/mux/sn2400.c
 new file mode 100644
-index 000000000000..fc0fdec2f043
+index 000000000000..03c9f21a598e
 --- /dev/null
 +++ b/drivers/mux/sn2400.c
-@@ -0,0 +1,144 @@
+@@ -0,0 +1,157 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * HDQ line switch of the SN2400 ("Tigris") charger used in Apple iPhones
@@ -133,9 +133,8 @@ index 000000000000..fc0fdec2f043
 +	return ret;
 +}
 +
-+static int sn2400_mux_set(struct mux_control *mux, int state)
++static int __sn2400_mux_set(struct regmap *map, int state)
 +{
-+	struct regmap *map = dev_get_regmap(mux->chip->dev.parent, NULL);
 +	int ret;
 +
 +	switch (state) {
@@ -152,6 +151,20 @@ index 000000000000..fc0fdec2f043
 +	default:
 +		return -EINVAL;
 +	}
++}
++
++static int sn2400_mux_set(struct mux_control *mux, int state)
++{
++	struct device *dev = mux->chip->dev.parent;
++	struct regmap *map = dev_get_regmap(dev, NULL);
++	unsigned int val = 0;
++	int ret;
++
++	ret = __sn2400_mux_set(map, state);
++	regmap_read(map, SN2400_REG_HDQ_CTRL, &val);
++	dev_dbg(dev, "HDQ state %d: control now %#04x (%d)\n", state, val, ret);
++
++	return ret;
 +}
 +
 +static const struct mux_control_ops sn2400_mux_ops = {
