@@ -42,7 +42,7 @@ contains the Broadcom BT firmware, your SSH public keys and the sshd host keys.
 
 | file | size | what |
 |---|---|---|
-| `rootfs.tar.xz` | 205 MiB (214,798,688 B) | the userland; md5 in `rootfs.tar.xz.md5`. Without the phone shell and app it was 147 MiB |
+| `rootfs.tar.xz` | 205 MiB (214,795,212 B) | the userland; md5 in `rootfs.tar.xz.md5`. Without the phone shell and app it was 147 MiB |
 | unpacked | 1100 MiB | in tmpfs on the phone (`SIZE=1400m` cap); 353 packages, list in `rootfs.packages.txt`. The phone shell and app added 311 MiB (was 788 MiB, 269 packages) |
 | `initramfs-userland.gz` | 2.6 MiB | stock HoolockLinux ramdisk + patched `/init` + `userland-switch.sh` |
 | `check-report.txt` | | output of `check-rootfs.sh` (16K scan, missing libraries, smoke tests) |

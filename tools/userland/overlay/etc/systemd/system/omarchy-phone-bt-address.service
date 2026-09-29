@@ -10,7 +10,7 @@ ConditionPathExists=/etc/omarchy-phone/bt-address
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-TimeoutStartSec=90
+TimeoutStartSec=180
 ExecStart=/usr/lib/phone-tk/bt-address
 
 [Install]

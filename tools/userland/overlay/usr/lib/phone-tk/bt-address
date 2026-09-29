@@ -24,8 +24,13 @@ done
 [ -n "$now" ] || echo "bt-address: hci0 is unconfigured, setting the address"
 [ "$now" = "$addr" ] && { echo "bt-address: already set"; exit 0; }
 bluetoothctl power off >/dev/null 2>&1
-sleep 1
-btmgmt --index 0 public-addr "$addr" >/dev/null 2>&1 || echo "bt-address: btmgmt public-addr failed" >&2
+# public-addr is rejected while the controller is still powered: retry.
+ok=""
+for t in 1 2 3; do
+	sleep "$t"
+	btmgmt --index 0 public-addr "$addr" >/dev/null 2>&1 && { ok=1; break; }
+done
+[ -n "$ok" ] || echo "bt-address: btmgmt public-addr failed 3 times" >&2
 # The index goes away and comes back configured; then power it on again.
 i=0
 while [ $i -lt 20 ]; do [ "$(cur)" = "$addr" ] && break; sleep 0.5; i=$((i + 1)); done

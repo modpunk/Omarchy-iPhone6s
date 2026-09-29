@@ -36,7 +36,7 @@ if [ -z "${NO_BT_SEED:-}" ]; then
 	[ -s "$BT_KEYS_TGZ" ] && install -m 600 "$BT_KEYS_TGZ" "$seed/bt-keys.tgz"
 	for f in "$seed"/*; do
 		[ -e "$f" ] || { echo "no Bluetooth address/keys found: skipping the BT seed"; break; }
-		"$TK/phone.sh" push "$f" >/dev/null || { echo "push of $(basename "$f") failed" >&2; exit 1; }
+		"$TK/phone.sh" push "$f" >/dev/null 2>&1 || { echo "push of $(basename "$f") failed" >&2; exit 1; }
 		echo "pushed $(basename "$f")"
 	done
 fi
