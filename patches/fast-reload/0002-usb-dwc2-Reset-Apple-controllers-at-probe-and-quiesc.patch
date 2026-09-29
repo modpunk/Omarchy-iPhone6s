@@ -1,0 +1,148 @@
+From 830108f500691a2000efb8ac0a374b7d797e6ce4 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 18:08:48 -0500
+Subject: [PATCH 2/3] usb: dwc2: Reset Apple controllers at probe and quiesce
+ them at shutdown
+
+On Apple SoCs the controller is handed over live: by iBoot/m1n1 on a
+cold boot, or by the previous kernel on a kexec. dwc2 only deasserted
+the reset at probe, and the s8000 DT named no "dwc2" reset, so the pmgr
+reset was never used and the core was inherited in whatever state it
+was left in. The shutdown hook masked interrupts and powered the PHY
+down, but never set SFTDISCON, left clock gating in place after a bus
+suspend, and left the core un-reset with its endpoints and DMA armed.
+
+- Name the s8000/s8003 OTG reset "dwc2" and pulse it at probe on
+  "apple,dwc2" (dwc2.apple_reset_on_probe=0 disables the pulse).
+- Clear PCGCTL on Apple before the first register read, in case the
+  previous owner left the core clock-gated after a bus suspend.
+- In peripheral mode, .shutdown now ungates the clocks, sets
+  SFTDISCON, soft-resets the core, then powers the PHY down.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/apple/s800-0-3.dtsi |  1 +
+ drivers/usb/dwc2/platform.c             | 72 +++++++++++++++++++++++--
+ 2 files changed, 69 insertions(+), 4 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/apple/s800-0-3.dtsi b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+index 78aa736afc6a..172914dfa3c5 100644
+--- a/arch/arm64/boot/dts/apple/s800-0-3.dtsi
++++ b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+@@ -268,6 +268,7 @@ usbdev: usbdev@20c100000 {
+ 				phy-names = "usb2-phy";
+ 				power-domains = <&ps_usbotg>;
+ 				resets = <&ps_usbotg>;
++				reset-names = "dwc2";
+ 				dr_mode = "peripheral";
+ 			};
+ #if 0
+diff --git a/drivers/usb/dwc2/platform.c b/drivers/usb/dwc2/platform.c
+index ef0d73077034..dbd676052d33 100644
+--- a/drivers/usb/dwc2/platform.c
++++ b/drivers/usb/dwc2/platform.c
+@@ -26,6 +26,22 @@
+ 
+ static const char dwc2_driver_name[] = "dwc2";
+ 
++/*
++ * Apple SoCs hand the controller over live: iBoot/m1n1 on a cold boot, or the
++ * previous kernel on a kexec. Pulse the pmgr reset at probe so the core starts
++ * from its power-on state no matter what was left running. Kill switch for
++ * bisecting on the phone: dwc2.apple_reset_on_probe=0.
++ */
++static bool apple_reset_on_probe = true;
++module_param(apple_reset_on_probe, bool, 0444);
++MODULE_PARM_DESC(apple_reset_on_probe,
++		 "Apple: pulse the controller reset at probe (default: true)");
++
++static bool dwc2_is_apple(struct dwc2_hsotg *hsotg)
++{
++	return of_device_is_compatible(hsotg->dev->of_node, "apple,dwc2");
++}
++
+ /*
+  * Check the dr_mode against the module configuration and hardware
+  * capabilities.
+@@ -217,6 +233,12 @@ static int dwc2_lowlevel_hw_init(struct dwc2_hsotg *hsotg)
+ 		return dev_err_probe(hsotg->dev, PTR_ERR(hsotg->reset),
+ 				     "error getting reset control\n");
+ 
++	if (hsotg->reset && apple_reset_on_probe && dwc2_is_apple(hsotg)) {
++		ret = reset_control_reset(hsotg->reset);
++		if (ret)
++			dev_warn(hsotg->dev, "controller reset failed: %d\n", ret);
++	}
++
+ 	reset_control_deassert(hsotg->reset);
+ 	ret = devm_add_action_or_reset(hsotg->dev, dwc2_reset_control_assert,
+ 				       hsotg->reset);
+@@ -368,12 +390,45 @@ static void dwc2_driver_remove(struct platform_device *dev)
+ static void dwc2_driver_shutdown(struct platform_device *dev)
+ {
+ 	struct dwc2_hsotg *hsotg = platform_get_drvdata(dev);
++	unsigned long flags;
+ 
+-	if (hsotg->ll_hw_enabled) {
+-		dwc2_disable_global_interrupts(hsotg);
+-		synchronize_irq(hsotg->irq);
+-		dwc2_lowlevel_hw_disable(hsotg);
++	if (!hsotg->ll_hw_enabled)
++		return;
++
++	/*
++	 * A kexec'd kernel inherits the controller as it is now, so in device
++	 * mode leave it quiet. Ungate the clocks first if the bus was suspended
++	 * (every other register access below needs them), then drop the pull-up
++	 * so the host sees a disconnect, and soft-reset the core so no endpoint
++	 * or DMA stays armed into memory the next kernel will own.
++	 */
++	if (hsotg->dr_mode == USB_DR_MODE_PERIPHERAL &&
++	    hsotg->params.power_down == DWC2_POWER_DOWN_PARAM_NONE &&
++	    !hsotg->params.no_clock_gating) {
++		spin_lock_irqsave(&hsotg->lock, flags);
++		if (hsotg->bus_suspended)
++			dwc2_gadget_exit_clock_gating(hsotg, 0);
++		spin_unlock_irqrestore(&hsotg->lock, flags);
+ 	}
++
++	dwc2_disable_global_interrupts(hsotg);
++	synchronize_irq(hsotg->irq);
++
++	if (dwc2_is_device_mode(hsotg)) {
++		spin_lock_irqsave(&hsotg->lock, flags);
++		dwc2_hsotg_core_disconnect(hsotg);
++		spin_unlock_irqrestore(&hsotg->lock, flags);
++
++		/* the host needs >2.5 us of SE0 to notice; give it a frame */
++		mdelay(3);
++
++		spin_lock_irqsave(&hsotg->lock, flags);
++		if (dwc2_core_reset(hsotg, true))
++			dev_warn(hsotg->dev, "core reset at shutdown failed\n");
++		spin_unlock_irqrestore(&hsotg->lock, flags);
++	}
++
++	dwc2_lowlevel_hw_disable(hsotg);
+ }
+ 
+ /**
+@@ -484,6 +539,15 @@ static int dwc2_driver_probe(struct platform_device *dev)
+ 	if (retval)
+ 		return retval;
+ 
++	/*
++	 * A previous kernel may have left the core clock-gated (bus suspend),
++	 * which makes GSNPSID and the soft reset below unreliable. PCGCTL stays
++	 * accessible while gated; the Apple reset pulse clears it too, this
++	 * covers apple_reset_on_probe=0.
++	 */
++	if (dwc2_is_apple(hsotg))
++		writel(0, hsotg->regs + PCGCTL);
++
+ 	hsotg->needs_byte_swap = dwc2_check_core_endianness(hsotg);
+ 
+ 	retval = dwc2_get_dr_mode(hsotg);
+-- 
+2.55.0
+
