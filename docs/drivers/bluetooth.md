@@ -140,7 +140,7 @@ BT/WLAN coexistence. Pairing a BLE keyboard has since worked with 0007, see the 
 The BCM4350C5 (with Apple's patchram, build 0825) sets bits 4 and 5 of the event type in legacy
 HCI LE Advertising Report events. Legacy report types are only 0x00..0x04, so
 `hci_le_adv_report_evt()` -> `process_adv_report()` logs
-`Unknown advertising packet type: 0x%02x` (rate limited) and drops the report. Among the dropped
+`unknown advertising packet type: 0x%02x` (rate limited, from `process_adv_report()`) and drops the report. Among the dropped
 reports are the keyboard's connectable advertisements (ADV_IND). BlueZ connects to a device only
 when it sees one of those during the passive scan, so pairing timed out with "Connect Failed";
 it only worked by luck, when an unflagged report happened to get through.
@@ -165,12 +165,39 @@ ADV_IND) is also what made BlueZ connect and the pairing succeed.
 Kernel: `6s/fast-reload` build (`7.3.0-rc1-g6831bc701a6c`), BlueZ in the Alpine chroot. Numbers
 from the main session's review of the phone logs:
 
-- Before 0007: 466 `Unknown advertising packet type` drops per boot, types 0x10, 0x12, 0x13,
+- Before 0007: 466 `unknown advertising packet type` drops per boot, types 0x10, 0x12, 0x13,
   0x14, 0x20, 0x23, 0x24. Pairing the EKM04 Mini BLE keyboard timed out with "Connect Failed".
 - After 0007: 0 drops; pairing completed in 3 s.
 
-<!-- TODO before merge: paste one raw "Unknown advertising packet type: 0x.." dmesg line and the
-     bluetoothctl pairing transcript (before/after), and the exact `uname -v` of the test boot. -->
+Raw evidence (2026-09-29, iPhone 6s N71; Bluetooth addresses redacted).
+
+Before 0007, kernel `#2 SMP PREEMPT Tue Sep 29 09:51:02 CDT 2026` (6s/fast-reload without the fix):
+
+```
+[ 1868.114669] Bluetooth: hci0: unknown advertising packet type: 0x23
+[ 1868.177981] Bluetooth: hci0: unknown advertising packet type: 0x20
+[ 1868.180821] Bluetooth: hci0: unknown advertising packet type: 0x24
+```
+
+Per-type counts over that boot: 0x10 ×70, 0x12 ×1, 0x13 ×108, 0x14 ×63, 0x20 ×74, 0x23 ×94,
+0x24 ×56 (466 total). `btmon` during a pairing attempt shows BlueZ adding the keyboard to the
+accept list and then giving up after 60 s without ever issuing LE Create Connection:
+
+```
+@ MGMT Event: Device Added (0x001a) plen 8             {0x0002} [hci0] 3.277872
+< HCI Command: LE Add Device To Acc.. (0x08|0x0011) plen 7  #35 [hci0] 3.280993
+@ MGMT Event: Connect Failed (0x000d) plen 8          {0x0002} [hci0] 63.277933
+@ MGMT Event: Device Removed (0x001b) plen 7          {0x0002} [hci0] 63.297106
+```
+
+After 0007, kernel `#3 SMP PREEMPT Tue Sep 29 13:07:49 CDT 2026`: `dmesg | grep -c "unknown
+advertising packet type"` is 0, and the same keyboard pairs in 3 seconds:
+
+```
+18:17:24 found XX:XX:XX:XX:XX:XX, pairing
+18:17:27 done XX:XX:XX:XX:XX:XX
+[  544.662679] hid-generic 0005:3554:F605.0001: input: BLUETOOTH HID v1.00 Keyboard [EKM04 Mini] on XX:XX:XX:XX:XX:XX
+```
 
 ### Fix
 
