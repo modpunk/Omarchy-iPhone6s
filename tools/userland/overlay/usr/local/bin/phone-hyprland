@@ -1,0 +1,22 @@
+#!/bin/sh
+# Start Hyprland on the framebuffer from an SSH login (no keyboard or touch
+# on the phone yet). seatd hands out the seat, so no VT login is needed.
+#   ssh omarchy@172.16.42.1 phone-hyprland        (log: ~/.cache/hyprland.log)
+#   ssh omarchy@172.16.42.1 pkill -x Hyprland     (stop)
+set -eu
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-seatd}"
+# simpledrm is KMS-only (no render node): Mesa renders with llvmpipe into
+# dumb buffers via its kms_swrast driver.
+export AQ_DRM_DEVICES="${AQ_DRM_DEVICES:-/dev/dri/card0}"
+export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-kms_swrast}"
+export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
+export LIBGL_ALWAYS_SOFTWARE=1
+export AQ_NO_MODIFIERS=1
+export XDG_SESSION_TYPE=wayland
+mkdir -p "$HOME/.cache"
+bin=Hyprland
+command -v start-hyprland >/dev/null 2>&1 && [ -z "${PHONE_NO_WATCHDOG:-}" ] && bin=start-hyprland
+if [ "${1:-}" = "--fg" ]; then exec "$bin"; fi
+nohup "$bin" >"$HOME/.cache/hyprland.log" 2>&1 </dev/null &
+echo "started $bin (pid $!), log: $HOME/.cache/hyprland.log"

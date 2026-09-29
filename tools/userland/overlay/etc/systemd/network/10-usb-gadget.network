@@ -1,0 +1,22 @@
+# USB gadget (NCM) link to the laptop. Same address the ramdisk used, so the
+# laptop side does not change across switch_root; networkd also takes over
+# the ramdisk's unudhcpd job and hands the laptop 172.16.42.2.
+[Match]
+Name=usb*
+
+[Link]
+RequiredForOnline=no
+
+[Network]
+Address=172.16.42.1/24
+DHCPServer=yes
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+KeepConfiguration=yes
+
+[DHCPServer]
+PoolOffset=2
+PoolSize=1
+EmitDNS=no
+EmitRouter=no

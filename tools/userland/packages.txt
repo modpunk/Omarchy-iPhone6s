@@ -1,0 +1,21 @@
+# Arch Linux ARM (aarch64) packages for the Omarchy Phone RAM userland.
+# One per line; '#' starts a comment. Dependencies are pulled in automatically.
+base                 # glibc, systemd (init), bash, coreutils, pacman
+archlinuxarm-keyring
+openssh              # sshd on the USB network
+iwd                  # Wi-Fi daemon (what Omarchy uses); dormant until a Wi-Fi driver exists
+bluez
+bluez-utils          # bluetoothctl, btmgmt
+pipewire
+wireplumber
+pipewire-pulse
+seatd
+mesa                 # EGL/GLES with llvmpipe / kms_swrast (pulls llvm-libs)
+hyprland
+libei                # Hyprland links libeis.so.1 but only lists it via xorg-xwayland
+foot                 # CPU-rendered Wayland terminal, cheap on llvmpipe
+ttf-jetbrains-mono
+zram-generator       # compressed swap in RAM (CONFIG_ZRAM=y)
+busybox              # nc/telnetd for testkit/phone.sh after switch_root
+sudo
+evtest
