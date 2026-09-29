@@ -121,12 +121,13 @@ done
 printf '  %-28s ' "icon call-start-symbolic"
 find "$ROOT/usr/share/icons" -name 'call-start-symbolic*' 2>/dev/null | sed "s|$ROOT||" | head -1
 # Session config: the wrapper dofile()s the shell's config (Lua errors show up here).
-mkdir -p "$ROOT/tmp/xdg"
+# Runs on a scratch copy of /etc/skel, so nothing lands in /home before pack.
+mkdir -p "$ROOT/tmp/xdg/home" && cp -a "$ROOT/etc/skel/.config" "$ROOT/tmp/xdg/home/"
 for v in "" PHONE_PLAIN=1; do
 	printf '  %-28s ' "hypr config ${v:-(phone shell)}"
-	chroot "$ROOT" /usr/bin/env -i PATH=/usr/local/bin:/usr/bin HOME=/home/omarchy XDG_RUNTIME_DIR=/tmp/xdg \
-		OPHONE_DEVICE=iphone6s OPHONE_SHELL=/usr/share/omarchy-phone/shell $v \
-		Hyprland --i-am-really-stupid --verify-config --config /home/omarchy/.config/hypr/hyprland.lua 2>&1 \
+	chroot "$ROOT" /usr/bin/env -i PATH=/usr/local/bin:/usr/bin HOME=/tmp/xdg/home XDG_RUNTIME_DIR=/tmp/xdg \
+		XDG_CACHE_HOME=/tmp/xdg/cache OPHONE_DEVICE=iphone6s OPHONE_SHELL=/usr/share/omarchy-phone/shell $v \
+		Hyprland --i-am-really-stupid --verify-config --config /tmp/xdg/home/.config/hypr/hyprland.lua 2>&1 \
 		| sed -n '/Config parsing result/,$p' | grep -v 'Config parsing result' | grep . | head -3 | tr '\n' ' '; echo
 done
 rm -rf "$ROOT/tmp/xdg"
