@@ -32,7 +32,7 @@ esac
 log() { { echo "fast-reload: $*" > /dev/kmsg; } 2>/dev/null; }
 
 jump() {
-	bound=""
+	bound="" rc=0
 	sleep 1 # let the telnet reply reach the laptop
 	if [ "$QUIESCE" = 1 ]; then
 		cfs="${FAST_RELOAD_CONFIGFS:-$(awk '$3 == "configfs" { print $2; exit }' /proc/mounts)}"
@@ -61,13 +61,15 @@ jump() {
 		# Only reached if the kernel refused the jump: give USB back so the phone
 		# stays reachable on the old kernel instead of needing a DFU.
 		log "kexec did not happen, rebinding USB"
+		rc=1
 	fi
 	for b in $bound; do echo "${b#*=}" > "${b%%=*}"; done
+	return $rc
 }
 
 if [ "${FAST_RELOAD_DETACHED:-}" = 1 ]; then
 	jump
-	exit 1
+	exit $?
 fi
 
 if [ "$REHEARSE" = 0 ]; then
