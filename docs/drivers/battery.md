@@ -61,6 +61,26 @@ that ends in `setHdqMaster()`:
 - to give the line to the charger's own gauge master ("BMU Master when
   discharging") it then writes **0x06**; "No Master when charging" is **0x00**.
 
+## Provenance
+
+Where each fact comes from. Nothing from the kernelcache or ADT is committed,
+only the facts below.
+
+| Fact | Source |
+|---|---|
+| Gauge is a bq27540 on uart5; `gas-gauge,hdq`; `battery-id-block`, `gauge-enable-interrupts` | Apple ADT (IPSW template and the iBoot-filled runtime ADT agree) |
+| uart5 @ 0x20a0d4000, AIC 197, clock-gate 85 -> PMGR 0x80200 | ADT; PMGR offset per CONTEXT.md mapping |
+| TX = GPIO 2 (`function-tx`, `function-battery_swi`) | ADT |
+| RX = GPIO 3 | **Inference**: live pad config matches other UARTs' RX pins; not in the ADT |
+| Line switch owned by the SN2400 (`function-battery_swi_request` -> tigris `HDQm`), charger at i2c1 0x75 | ADT (the reference) + iOS disassembly (what `HDQm` does) |
+| SN2400 reg 0x1d: 0x04 request, bit 5 ack, 1 s timeout, 0x06 charger master, 0x00 none | iOS disassembly (`AppleSN2400Charger::setHdqMaster`, `setHDQInterfaceGated`); **no public doc** |
+| iOS UART setup 57600 8N2, no flow control | iOS disassembly (`AppleHDQGasGaugeControl::acquirePort`, IOSerial event constants) |
+| Bit encoding 0 -> 0xc0, 1 -> 0xfe; response bit = char > 0xf8; echo compared | iOS disassembly (`_hdqOp`) |
+| Break 200 us + 40 us before every transaction, break echo expected | iOS disassembly (`_sendBreak`) |
+| HDQ limits t_B, t_BR, t_HW0/1, t_CYCH, t_DW0/1, t_CYCD; 7-bit address + R/W bit, LSB first; one byte per read | TI public docs (bq27xxx datasheet HDQ timing tables, TI HDQ-over-UART app note SLUA408) |
+| Standard command addresses (0x06 Temp, 0x08 Voltage, 0x2c SOC, ...) | TI bq27541 family datasheet via Linux `bq27xxx_battery.c`; **assumed** to match Apple's bq27540 firmware |
+| 8O1 + 0xff for a 1 instead of 8N2 + 0xfe | **Own choice** (serdev has no stop-bit API), checked against the TI timing limits |
+
 ## Linux design
 
 **Transport choice.** The task suggested an HDQ-over-UART w1 master so that the
@@ -145,24 +165,24 @@ point in the same boot is suspect.
 Not tested at all: the SN2400 mux driver, the mux-aware transport (v2), i2c1,
 the full DT. No reading of voltage, SOC, current or temperature has been made.
 
-**Next test (fresh boot, after foundation's `fnd_phandle` is loaded):**
+**Next test** (`tools/battery/live-test.sh`, for the foundation base DT with
+`__symbols__` and `serial1..6`; the overlay is `testkit/overlays/battery-labels.dtso`,
+built with `dtc -@`):
 
 ```
-# 0. preconditions (read-only)
-phone.sh run 'od -An -tx1 /proc/device-tree/soc/power-management@20e000000/power-controller@80200/phandle'   # 00 00 f0 40
-phone.sh run 'ls /proc/device-tree/soc | grep -c serial@20a0d4000'   # 0: nobody else has uart5
-# 1. modules, in dependency order (build: .6s-test Kbuild above)
-phone.sh insmod mux_core_v1.ko
-phone.sh insmod sn2400_mux_v1.ko
-phone.sh insmod bq27xxx_hdq_uart_v2.ko dyndbg=+p
-# 2. overlay (enables i2c1 + charger@75, uart5 pins 2/3, uart5 + fuel-gauge); never remove it
-phone.sh overlay battery.dtbo
+tools/battery/live-test.sh            # read-only checks, modules, overlay,
+                                      # SN2400 read by a peek driver; prints
+                                      # the writes it would do, then stops
+tools/battery/live-test.sh --write    # binds sn2400_mux_v1 (writes 0x1d), gauge probes,
+                                      # prints /sys/class/power_supply/*/uevent
 ```
 
 Expected if the analysis is right:
 
 ```
-sn2400_mux_v1 1-0075: HDQ control 0x..., idle state N     # first SN2400 access (read); registering the mux then writes the idle state back
+sn2400_peek_v1 1-0075: sn2400 peek: reg07=0x.. reg1d=0x.. (read-only)
+sn2400_mux_v1 1-0075: HDQ control 0x.., idle state N
+sn2400_mux_v1 1-0075: HDQ state 1: control now 0x24 (0)     # dyndbg: request acked
 bq27xxx_hdq_uart_v2 serial?-0: cmd 0x09: <8 chars> -> 0x0f   # dyndbg, echo OK
 bq27xxx_hdq_uart_v2 serial?-0: HDQ link up, voltage register reads 3xxx..4xxx mV
 cat /sys/class/power_supply/bq27540-0/uevent   # VOLTAGE_NOW 3.4-4.4 V, CAPACITY 0-100, TEMP ~200-400 (0.1 C)
@@ -214,6 +234,6 @@ phone.sh overlay battery.dtbo    # dtc -I dts -O dtb (no -@: the live tree has n
   check the values against the 6s battery (design capacity 1715 mAh at 0x3c).
 - The UART break relies on `UCON.SBREAK`. On Samsung UARTs it auto-clears after one
   frame (191 us), which is just above t_B = 190 us.
-- dt-bindings were not run through `dt_binding_check` (no dtschema here).
+- `dt_binding_check` (dtschema 2026.9) passes for both bindings. `dtbs_check` on s8000-n71 (with the foundation serial5 nodes) is clean. `fuel-gauge` was added to the allowed serial child names in `serial.yaml`.
 - `samsung_tty` remove bug: never remove the test overlay (foundation has a fix in its series).
 - Upstream: `CONFIG_MUX_CORE` must be enabled in the hoolock config.

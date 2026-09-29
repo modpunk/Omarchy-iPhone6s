@@ -1,4 +1,4 @@
-From 178672f8bf331d1c8e0bf742b87ce6bf50989d69 Mon Sep 17 00:00:00 2001
+From e5e22908d58e9c880c295b3bfce388afb6cf3d91 Mon Sep 17 00:00:00 2001
 From: modpunk <27315771+modpunk@users.noreply.github.com>
 Date: Mon, 28 Sep 2026 21:17:58 -0500
 Subject: [PATCH 4/5] power: supply: bq27xxx: Add HDQ over UART transport
