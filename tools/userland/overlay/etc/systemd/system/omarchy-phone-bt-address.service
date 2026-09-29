@@ -1,0 +1,17 @@
+# Give the controller its public address (there's no syscfg address on this
+# boot path). The address comes from /etc/omarchy-phone/bt-address, written at
+# deploy time (push-rootfs.sh -> stage2.sh seed); it is never in the image.
+[Unit]
+Description=Omarchy Phone: set the Bluetooth public address
+After=bluetooth.service omarchy-phone-bt-keys.service
+Wants=bluetooth.service
+ConditionPathExists=/etc/omarchy-phone/bt-address
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=180
+ExecStart=/usr/lib/phone-tk/bt-address
+
+[Install]
+WantedBy=multi-user.target

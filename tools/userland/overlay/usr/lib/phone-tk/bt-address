@@ -1,0 +1,39 @@
+#!/bin/sh
+# Set hci0's public address from /etc/omarchy-phone/bt-address, the way it was
+# proven by hand: power off through bluetoothd, btmgmt public-addr, power on.
+# The kernel re-adds the index with the new address, so bluetoothd then loads
+# the pairings stored under /var/lib/bluetooth/<address>/.
+# Never fails the boot: problems are logged and the unit exits 0.
+f="${1:-/etc/omarchy-phone/bt-address}"
+addr="$(tr -d ' \t\r\n' < "$f" | tr 'a-f' 'A-F')"
+echo "$addr" | grep -Eq '^([0-9A-F]{2}:){5}[0-9A-F]{2}$' || { echo "bt-address: $f is not XX:XX:XX:XX:XX:XX" >&2; exit 0; }
+cur() { btmgmt --index 0 info 2>/dev/null | awk '$1 == "addr" {print toupper($2); exit}'; }
+# hci_bcm probes late (after gpio-apple-pmic) and loads firmware: wait for it.
+i=0
+while [ $i -lt 60 ] && [ ! -e /sys/class/bluetooth/hci0 ]; do sleep 1; i=$((i + 1)); done
+[ -e /sys/class/bluetooth/hci0 ] || { echo "bt-address: no controller (hci0) after 60 s, address not set" >&2; exit 0; }
+# Then for mgmt to report it. With the btbcm patch that marks the Broadcom
+# default address invalid, hci0 stays unconfigured (no info, "missing options:
+# public-address") until the address is set; bluetoothd doesn't see it then.
+i=0; now=""
+while [ $i -lt 15 ]; do
+	now="$(cur)"; [ -n "$now" ] && [ "$now" != "00:00:00:00:00:00" ] && break
+	btmgmt --index 0 config 2>/dev/null | grep -q 'missing options:.*public-address' && break
+	sleep 1; i=$((i + 1))
+done
+[ -n "$now" ] || echo "bt-address: hci0 is unconfigured, setting the address"
+[ "$now" = "$addr" ] && { echo "bt-address: already set"; exit 0; }
+bluetoothctl power off >/dev/null 2>&1
+# public-addr is rejected while the controller is still powered: retry.
+ok=""
+for t in 1 2 3; do
+	sleep "$t"
+	btmgmt --index 0 public-addr "$addr" >/dev/null 2>&1 && { ok=1; break; }
+done
+[ -n "$ok" ] || echo "bt-address: btmgmt public-addr failed 3 times" >&2
+# The index goes away and comes back configured; then power it on again.
+i=0
+while [ $i -lt 20 ]; do [ "$(cur)" = "$addr" ] && break; sleep 0.5; i=$((i + 1)); done
+bluetoothctl power on >/dev/null 2>&1 || { sleep 2; bluetoothctl power on >/dev/null 2>&1; }
+if [ "$(cur)" = "$addr" ]; then echo "bt-address: set"; else echo "bt-address: controller still reports another address" >&2; fi
+exit 0

@@ -10,6 +10,7 @@
 # 16K-only failure; (1) is the static substitute. Real proof is on the phone.
 set -uo pipefail
 ROOT="$1"
+HERE="$(cd "$(dirname "$0")" && pwd)"
 python3 - "$ROOT" <<'PY'
 import os, struct, sys
 root = sys.argv[1]
@@ -88,7 +89,7 @@ for r, n in sorted(missing): print(f"  MISSING {r} -> {n}")
 print(f"  {len(missing)} unresolved")
 PY
 echo "== qemu smoke tests =="
-smoke() { printf '  %-28s ' "$1"; out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin LANG=C.UTF-8 XDG_RUNTIME_DIR=/tmp "$@" 2>&1 | head -1)"; echo "${out:-<no output>}"; }
+smoke() { printf '  %-28s ' "$1"; out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/local/bin:/usr/bin LANG=C.UTF-8 XDG_RUNTIME_DIR=/tmp "$@" 2>&1 | grep -m1 .)"; echo "${out:-<no output>}"; }
 smoke /usr/lib/systemd/systemd --version
 smoke Hyprland --version
 smoke foot --version
@@ -100,6 +101,85 @@ smoke pipewire --version
 smoke wireplumber --version
 smoke seatd -v
 smoke busybox
+smoke qs --version
+smoke /usr/lib/upowerd --help
+smoke brightnessctl --version
+smoke python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw; print('PyGObject', gi.__version__, 'GTK', Gtk.get_major_version(), Gtk.get_minor_version(), 'Adw', Adw.get_major_version(), Adw.get_minor_version())"
+smoke env PYTHONPATH=/usr/share/omarchy-phone/apps/phone python3 -c "import omarchy_phone.ui, omarchy_phone.daemon, omarchy_phone.cli; print('Phone app modules import')"
+smoke phonectl --help
+printf '  %-28s ' "omarchy-phone install"
+ok=yes; for f in /usr/share/omarchy-phone/shell/qs/shell.qml /usr/share/omarchy-phone/shell/hypr/hyprland.lua \
+	/usr/share/omarchy-phone/shell/hypr/devices/iphone6s.lua /usr/share/applications/org.omarchy.Phone.desktop \
+	/etc/pam.d/ophone-lock /etc/systemd/logind.conf.d/omarchy-phone.conf /home/omarchy/.config/hypr/hyprland.lua \
+	/home/omarchy/.config/hypr/plain.lua; do [ -e "$ROOT$f" ] || { ok="NO ($f)"; break; }; done
+for f in ophone-ctl ophone-sys omarchy-phone phoned phonectl; do   # absolute symlinks: resolve inside ROOT
+	[ -x "$ROOT$(readlink "$ROOT/usr/local/bin/$f" 2>/dev/null || echo /usr/local/bin/$f)" ] || ok="NO ($f)"; done
+echo "$ok; $(tr '\n' ' ' < "$ROOT/usr/share/omarchy-phone/REVISIONS" 2>/dev/null)"
+for fam in "JetBrainsMono Nerd Font" "Noto Sans" "Noto Sans:weight=light"; do
+	printf '  %-28s ' "fc-match $fam"; chroot "$ROOT" /usr/bin/fc-match "$fam" 2>&1 | head -1
+done
+printf '  %-28s ' "icon call-start-symbolic"
+find "$ROOT/usr/share/icons" -name 'call-start-symbolic*' 2>/dev/null | sed "s|$ROOT||" | head -1
+# Session config: the wrapper dofile()s the shell's config (Lua errors show up here).
+# Runs on a scratch copy of /etc/skel, so nothing lands in /home before pack.
+mkdir -p "$ROOT/tmp/xdg/home" && cp -a "$ROOT/etc/skel/.config" "$ROOT/tmp/xdg/home/"
+for v in "" PHONE_PLAIN=1; do
+	printf '  %-28s ' "hypr config ${v:-(phone shell)}"
+	chroot "$ROOT" /usr/bin/env -i PATH=/usr/local/bin:/usr/bin HOME=/tmp/xdg/home XDG_RUNTIME_DIR=/tmp/xdg \
+		XDG_CACHE_HOME=/tmp/xdg/cache OPHONE_DEVICE=iphone6s OPHONE_SHELL=/usr/share/omarchy-phone/shell $v \
+		Hyprland --i-am-really-stupid --verify-config --config /tmp/xdg/home/.config/hypr/hyprland.lua 2>&1 \
+		| sed -n '/Config parsing result/,$p' | grep -v 'Config parsing result' | grep . | head -3 | tr '\n' ' '; echo
+done
+rm -rf "$ROOT/tmp/xdg"
+printf '  %-28s ' "user dbus.socket"
+[ -e "$ROOT/usr/lib/systemd/user/sockets.target.wants/dbus.socket" ] && echo enabled || echo NO
+# 16K pages for jemalloc users (quickshell): report 16 KiB to them under qemu.
+# Positive control first: a 128 KiB page must make jemalloc refuse to start.
+if clang --target=aarch64-linux-gnu -O2 -fPIC -shared -nostdlib -fuse-ld=lld \
+	-o "$ROOT/tmp/pagesize16k.so" "$HERE/shim/pagesize16k.c" "$ROOT/usr/lib/libc.so.6" 2>/dev/null; then
+	pg() { out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin LANG=C.UTF-8 XDG_RUNTIME_DIR=/tmp \
+		LD_PRELOAD=/tmp/pagesize16k.so "$@" 2>&1 | head -1)"; echo "${out:-<no output>}"; }
+	printf '  %-28s ' "jemalloc @128K (control)"
+	pg env PAGESIZE16K_VALUE=131072 LD_PRELOAD=/tmp/pagesize16k.so:/usr/lib/libjemalloc.so.2 /usr/bin/true
+	printf '  %-28s ' "jemalloc @16K"
+	pg env LD_PRELOAD=/tmp/pagesize16k.so:/usr/lib/libjemalloc.so.2 /usr/bin/echo ok
+	printf '  %-28s ' "qs --version @16K"; pg qs --version
+	rm -f "$ROOT/tmp/pagesize16k.so"
+else
+	echo "  (pagesize16k shim not built: needs host clang + lld)"
+fi
+# Phone driver modules (build-rootfs.sh stage_config_modules) and their load order.
+for d in "$ROOT"/usr/lib/modules/*/; do
+	krel="$(basename "$d")"; printf '  %-28s ' "modules $krel"
+	ok=yes
+	for m in gpio-apple-pmic mux-sn2400 bq27xxx_battery_hdq_uart; do
+		v="$(modinfo -F vermagic "$d/extra/$m.ko" 2>/dev/null | awk '{print $1}')"
+		[ "$v" = "$krel" ] || { ok="NO ($m vermagic '${v:-missing}')"; break; }
+		grep -q "^extra/$m.ko:" "$d/modules.dep" 2>/dev/null || { ok="NO ($m not in modules.dep)"; break; }
+	done
+	echo "$ok; load order: $(sed 's/#.*//' "$ROOT/etc/modules-load.d/omarchy-phone.conf" 2>/dev/null | awk NF | tr '\n' ' ')"
+done
+printf '  %-28s ' "modprobe softdep"
+chroot "$ROOT" /usr/bin/modprobe -c 2>/dev/null | grep -m1 '^softdep bq27xxx_battery_hdq_uart' || echo NO
+printf '  %-28s ' "boot units"
+ok=yes; for u in multi-user.target.wants/omarchy-phone-bt-address.service bluetooth.service.wants/omarchy-phone-bt-keys.service \
+	bluetooth.target.wants/bluetooth.service multi-user.target.wants/seatd.service; do
+	[ -L "$ROOT/etc/systemd/system/$u" ] || ok="NO ($u)"; done
+[ -L "$ROOT/home/omarchy/.config/systemd/user/default.target.wants/omarchy-phone-session.service" ] || ok="NO (omarchy-phone-session)"
+[ -e "$ROOT/etc/systemd/user/default.target.wants/omarchy-phone-session.service" ] && ok="NO (session enabled globally)"
+echo "$ok"
+printf '  %-28s ' "systemd-analyze verify"
+out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin SYSTEMD_LOG_LEVEL=warning /usr/bin/systemd-analyze verify --man=no \
+	/etc/systemd/system/omarchy-phone-bt-keys.service /etc/systemd/system/omarchy-phone-bt-address.service 2>&1 \
+	| grep -v -i 'dbus\|bus\b\|Failed to connect\|proc\|cgroup' | head -3 | tr '\n' ' ')"
+echo "${out:-ok}"
+printf '  %-28s ' "scripts sh -n"
+ok=yes; for f in /usr/lib/phone-tk/bt-address /usr/lib/phone-tk/wait-display /usr/local/bin/phone-hyprland; do
+	chroot "$ROOT" /usr/bin/sh -n "$f" 2>/dev/null || ok="NO ($f)"; [ -x "$ROOT$f" ] || ok="NO ($f not executable)"; done
+echo "$ok"
+printf '  %-28s ' "no BT secrets in image"
+[ -z "$(ls -A "$ROOT/etc/omarchy-phone" 2>/dev/null)" ] && [ -z "$(ls -A "$ROOT/var/lib/bluetooth" 2>/dev/null)" ] \
+	&& echo "ok (seeded at deploy)" || echo "NO: /etc/omarchy-phone or /var/lib/bluetooth not empty"
 printf '  %-28s ' "sshd -t (config test)"; chroot "$ROOT" /usr/bin/sshd -t && echo ok
 printf '  %-28s ' "mesa kms_swrast present"
 [ -e "$ROOT/usr/lib/dri/kms_swrast_dri.so" ] && [ -e "$ROOT/usr/lib/gbm/dri_gbm.so" ] && echo yes || echo NO

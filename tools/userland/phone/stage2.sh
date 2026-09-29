@@ -7,6 +7,8 @@
 #                             the compressed tarball never sits in RAM)
 #   stage2.sh unpack <file>   same from a pushed file (deleted after unpacking)
 #   stage2.sh status          progress / result of recv or unpack, RAM use
+#   stage2.sh seed            move deploy-time files pushed to /tmp/6s (bt-address,
+#                             bt-keys.tgz) into /newroot/etc/omarchy-phone (root, 0600)
 #   stage2.sh go              hand over: switch_root into /newroot (needs the
 #                             patched initramfs-userland.gz; PID 1 does the switch)
 #   stage2.sh nsboot          EXPERIMENTAL, no reboot needed: boot systemd as PID 1
@@ -66,6 +68,19 @@ carry() {
 	cp /HL_init.log "$NEWROOT/var/lib/6s-testkit/" 2>/dev/null
 }
 
+# Per-phone files that must not be baked into the image. Moved, not copied, so
+# carry() doesn't leave a second copy in /var/lib/6s-testkit.
+seed() {
+	[ -d "$NEWROOT/etc" ] || { echo "no userland in $NEWROOT"; exit 1; }
+	mkdir -p "$NEWROOT/etc/omarchy-phone"; chmod 700 "$NEWROOT/etc/omarchy-phone"
+	for f in bt-address bt-keys.tgz; do
+		[ -f "$S/$f" ] || continue
+		mv -f "$S/$f" "$NEWROOT/etc/omarchy-phone/$f"
+		chown 0:0 "$NEWROOT/etc/omarchy-phone/$f"; chmod 600 "$NEWROOT/etc/omarchy-phone/$f"
+		echo "seeded /etc/omarchy-phone/$f"
+	done
+}
+
 case "${1:-}" in
 prep) prep; df -m "$NEWROOT" | tail -1; free -m | head -2 ;;
 recv)
@@ -75,6 +90,7 @@ unpack)
 	[ -f "${2:-}" ] || { echo "usage: stage2.sh unpack <file.tar.xz>"; exit 1; }
 	prep; unpack_from "cat '$2'"; rm -f "$2" ;;
 status) status ;;
+seed) seed ;;
 go)
 	check_root
 	grep -q userland-go /init || { echo "this ramdisk's /init is not patched: boot initramfs-userland.gz (see docs/userland.md) or try 'stage2.sh nsboot'"; exit 1; }
@@ -93,5 +109,5 @@ nsboot)
 	setsid unshare -m -p -f sh -c "mount --make-rprivate / && cd '$NEWROOT' && mount --move . / && exec chroot . /usr/lib/systemd/systemd" \
 		</dev/console >/dev/console 2>&1 &
 	sleep 3; ps | grep -c '[s]ystemd' ;;
-*) sed -n '2,14p' "$0"; exit 1 ;;
+*) sed -n '2,16p' "$0"; exit 1 ;;
 esac

@@ -20,3 +20,12 @@ zram-generator       # compressed swap in RAM (CONFIG_ZRAM=y)
 busybox              # nc/telnetd for testkit/phone.sh after switch_root
 sudo
 evtest
+# ---- Omarchy Phone shell + Phone app (docs/userland.md "Omarchy Phone shell")
+quickshell           # the phone shell (QML); pulls qt6-base/declarative/svg/wayland, links jemalloc (ALARM: 64K lg-page, 16K-safe)
+wtype                # on-screen keyboard types through the virtual-keyboard protocol
+brightnessctl        # ophone-sys brightness / flashlight
+upower               # Quickshell.Services.UPower (battery in the status bar); D-Bus activated
+libnotify            # notify-send, for testing shell notifications
+gtk4                 # Phone app UI
+libadwaita
+python-gobject       # PyGObject for the Phone app (pulls python)

@@ -1,29 +1,21 @@
--- Omarchy Phone starter config (Hyprland 0.56 Lua).
--- iPhone 6s: 750x1334 simpledrm framebuffer, no GPU driver, so Mesa llvmpipe
--- renders everything on the CPU. Keep effects off.
-hl.monitor({ output = "", mode = "preferred", position = "0x0", scale = 2 })
+-- Omarchy Phone session (iPhone 6s image, Hyprland 0.56 Lua).
+-- The phone shell's own config does the work: monitors and keys from
+-- devices/$OPHONE_DEVICE.lua, then `qs -p $OPHONE_SHELL/qs` at start.
+-- phone-hyprland exports OPHONE_DEVICE=iphone6s and OPHONE_SHELL.
+--   PHONE_PLAIN=1 phone-hyprland     plain foot-only session (plain.lua)
+if os.getenv("PHONE_PLAIN") == "1" then
+  dofile(os.getenv("HOME") .. "/.config/hypr/plain.lua")
+  return
+end
 
-hl.env("XCURSOR_SIZE", "24")
-hl.env("HYPRCURSOR_SIZE", "24")
+local shell = os.getenv("OPHONE_SHELL") or "/usr/share/omarchy-phone/shell"
+dofile(shell .. "/hypr/hyprland.lua")
 
+-- Image overrides, proven on the phone with the plain config.
 hl.config({
-  general = { gaps_in = 2, gaps_out = 4, border_size = 1, layout = "dwindle" },
-  decoration = {
-    rounding = 0,
-    shadow = { enabled = false },
-    blur = { enabled = false },
-  },
-  animations = { enabled = false },
-  misc = { force_default_wallpaper = 0, disable_hyprland_logo = true },
-  xwayland = { enabled = false },
-  cursor = { no_hardware_cursors = true },
-  input = { kb_layout = "us" },
+  xwayland = { enabled = false },           -- Xwayland isn't installed
+  cursor = { no_hardware_cursors = true },  -- simpledrm has no cursor plane
+  misc = { disable_hyprland_guiutils_check = true },  -- hyprland-guiutils isn't installed
 })
-
-hl.on("hyprland.start", function()
-  hl.exec_cmd("foot")
-end)
-
-local mod = "SUPER"
-hl.bind(mod .. " + Return", hl.dsp.exec_cmd("foot"))
-hl.bind(mod .. " + W", hl.dsp.window.close())
+hl.env("GSK_RENDERER", "cairo")      -- GTK4 apps: CPU renderer, cheaper than GL on llvmpipe
+hl.env("QS_ICON_THEME", "Adwaita")   -- app icons for the home grid (Yaru isn't in ALARM)

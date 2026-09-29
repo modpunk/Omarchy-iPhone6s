@@ -1,0 +1,16 @@
+# Restore BlueZ pairing data pushed at deploy time (push-rootfs.sh ->
+# stage2.sh seed -> /etc/omarchy-phone/bt-keys.tgz, members bluetooth/...).
+[Unit]
+Description=Omarchy Phone: restore Bluetooth pairings
+Before=bluetooth.service
+ConditionPathExists=/etc/omarchy-phone/bt-keys.tgz
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/install -d -m 700 -o root -g root /var/lib/bluetooth
+ExecStart=/usr/bin/tar -xzpf /etc/omarchy-phone/bt-keys.tgz -C /var/lib --no-same-owner
+ExecStart=/usr/bin/chmod -R go-rwx /var/lib/bluetooth
+
+[Install]
+WantedBy=bluetooth.service

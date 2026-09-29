@@ -1,0 +1,22 @@
+# Start the Omarchy Phone session (Hyprland + the phone shell) at boot. The
+# omarchy user lingers, so its user manager starts without a login; the unit
+# is enabled for that user only (~/.config/systemd/user/default.target.wants).
+# Turn it off:  systemctl --user disable --now omarchy-phone-session   (as omarchy)
+#          or:  touch ~omarchy/.config/omarchy-phone/no-autostart
+# Log: ~/.cache/hyprland.log, as with an SSH start.
+[Unit]
+Description=Omarchy Phone session (Hyprland + phone shell)
+ConditionUser=!root
+ConditionPathExists=!%h/.config/omarchy-phone/no-autostart
+StartLimitIntervalSec=120
+StartLimitBurst=3
+
+[Service]
+Type=exec
+ExecStartPre=/usr/lib/phone-tk/wait-display
+ExecStart=/bin/sh -c 'mkdir -p %h/.cache && exec /usr/local/bin/phone-hyprland --fg >%h/.cache/hyprland.log 2>&1'
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

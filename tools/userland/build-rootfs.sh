@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build the Omarchy Phone RAM userland: Arch Linux ARM (aarch64) + systemd,
-# sshd, iwd, BlueZ, PipeWire, seatd, Mesa llvmpipe, Hyprland, foot.
+# sshd, iwd, BlueZ, PipeWire, seatd, Mesa llvmpipe, Hyprland, foot, plus the
+# Omarchy Phone shell (QuickShell) and Phone app (GTK4/libadwaita, Python).
 # Runs as a normal user on an x86_64 Arch host: re-execs itself in a user +
 # mount + pid namespace (unshare --map-auto, needs /etc/subuid) and runs
 # package scriptlets through qemu-aarch64-static via binfmt_misc.
@@ -10,7 +11,11 @@
 #
 # Env: OUT (default ~/Work/hoolock-iphone5s/build/userland), USERNAME (omarchy),
 #      USERPASS (omarchy), SSH_PUBKEYS (default: ~/.ssh/*.pub),
-#      FW_DIR (BT firmware; default ~/Work/hoolock-iphone5s/firmware/brcm).
+#      FW_DIR (BT firmware; default ~/Work/hoolock-iphone5s/firmware/brcm),
+#      PHONE_SRC (omarchy-phone git repo; default ~/Work/omarchy-phone),
+#      SHELL_REV / APP_REV (commits of its shell/ and apps/phone/ to install),
+#      KBUILD (kernel build tree with the out-of-tree phone drivers; default
+#      ~/Work/hoolock-iphone5s/build/integration), KREL (its kernel release).
 # Artifacts stay out of git: they carry Broadcom firmware and your SSH keys.
 # The root dir is owned by subuids; delete it with
 #   unshare --user --map-auto --map-root-user rm -rf "$OUT/root"
@@ -23,6 +28,19 @@ USERNAME="${USERNAME:-omarchy}"
 USERPASS="${USERPASS:-omarchy}"
 FW_DIR="${FW_DIR:-$HOME/Work/hoolock-iphone5s/firmware/brcm}"
 STAGES="${STAGES:-install config strip check pack}"
+PHONE_SRC="${PHONE_SRC:-$HOME/Work/omarchy-phone}"
+# Pinned so a rebuild installs the same shell/app; bump when deploying newer ones.
+SHELL_REV="${SHELL_REV:-67eabf4c0e2a9273d98851d43e6af88d78492732}"   # branch shell
+APP_REV="${APP_REV:-127478931f2f683f10830310948da31fab96b254}"       # branch phone-app
+# Fonts the shell names (Theme.qml). The packages are 232 + 107 MB; only these
+# faces are extracted from the cached packages (not pacman-tracked).
+FONT_PKGS="ttf-jetbrains-mono-nerd noto-fonts"
+FONT_FILES="JetBrainsMonoNerdFont-Regular.ttf JetBrainsMonoNerdFont-Bold.ttf
+	NotoSans-Light.ttf NotoSans-Regular.ttf NotoSans-Medium.ttf NotoSans-Bold.ttf"
+KBUILD="${KBUILD:-$HOME/Work/hoolock-iphone5s/build/integration}"
+# Drivers the phone needs that aren't built in, in load order (modules-load.d).
+KMODS="drivers/gpio/gpio-apple-pmic.ko drivers/mux/mux-sn2400.ko
+	drivers/power/supply/bq27xxx_battery_hdq_uart.ko"
 QEMU=/usr/bin/qemu-aarch64-static
 
 log() { printf '\033[1m[userland]\033[0m %s\n' "$*"; }
@@ -40,8 +58,29 @@ if [ "$(id -u)" != 0 ]; then
 	else
 		cat "$SSH_PUBKEYS" > "$OUT/authorized_keys"
 	fi
+	# Omarchy Phone sources, from git (not a worktree), before entering the namespace.
+	case " $STAGES " in *" config "*)
+		git -C "$PHONE_SRC" rev-parse -q --verify "$SHELL_REV^{commit}" >/dev/null \
+			&& git -C "$PHONE_SRC" rev-parse -q --verify "$APP_REV^{commit}" >/dev/null \
+			|| die "need $PHONE_SRC with commits $SHELL_REV and $APP_REV (PHONE_SRC/SHELL_REV/APP_REV)"
+		git -C "$PHONE_SRC" archive -o "$OUT/ophone-shell.tar" "$SHELL_REV" shell
+		git -C "$PHONE_SRC" archive -o "$OUT/ophone-app.tar" "$APP_REV" apps/phone
+		printf 'shell %s\nphone-app %s\n' "$(git -C "$PHONE_SRC" rev-parse --short=12 "$SHELL_REV")" \
+			"$(git -C "$PHONE_SRC" rev-parse --short=12 "$APP_REV")" > "$OUT/ophone-revs"
+	esac
+	# Phone driver modules must match the kernel that boots (vermagic).
+	case " $STAGES " in *" config "*)
+		KREL="${KREL:-$(cat "$KBUILD/include/config/kernel.release" 2>/dev/null)}"
+		[ -n "$KREL" ] || die "no kernel release: set KBUILD (or KREL)"
+		for m in $KMODS; do
+			[ -s "$KBUILD/$m" ] || die "missing $KBUILD/$m (build the phone drivers, or set KBUILD)"
+			v="$(modinfo -F vermagic "$KBUILD/$m" | awk '{print $1}')"
+			[ "$v" = "$KREL" ] || die "$m is built for $v, not $KREL"
+		done
+		export KREL
+	esac
 	exec unshare --user --map-auto --map-root-user --mount --pid --fork --kill-child \
-		env HOME="$HOME" OUT="$OUT" STAGES="$STAGES" "$0" "$@"
+		env HOME="$HOME" OUT="$OUT" STAGES="$STAGES" KBUILD="$KBUILD" KREL="${KREL:-}" "$0" "$@"
 fi
 
 # ---- inside the namespace: uid 0 maps to the calling user -----------------
@@ -93,6 +132,9 @@ stage_install() {
 	# shellcheck disable=SC2046
 	pacman --root "$ROOT" --config "$CONF" --gpgdir "$OUT/gnupg" --cachedir "$OUT/cache" \
 		--noconfirm --needed -Sy "${assume[@]}" $(pkgs packages.txt)
+	# shellcheck disable=SC2086
+	pacman --root "$ROOT" --config "$CONF" --gpgdir "$OUT/gnupg" --cachedir "$OUT/cache" \
+		--noconfirm -Sw $FONT_PKGS
 	umount_chroot
 }
 
@@ -102,7 +144,10 @@ stage_config() {
 	cp -a "$HERE/overlay/." "$ROOT/"
 	# Overlay files arrive owned by the building user (= ns uid 0 already).
 	chown -R 0:0 "$ROOT/etc/systemd" "$ROOT/etc/ssh" "$ROOT/etc/sudoers.d" "$ROOT/etc/iwd" \
-		"$ROOT/etc/xdg" "$ROOT/etc/skel" "$ROOT/usr/local" "$ROOT/usr/lib/phone-tk"
+		"$ROOT/etc/xdg" "$ROOT/etc/skel" "$ROOT/usr/local" "$ROOT/usr/lib/phone-tk" \
+		"$ROOT/etc/modules-load.d" "$ROOT/etc/modprobe.d"
+	stage_config_phone
+	stage_config_modules
 	# No predictable interface renames: usb0 must stay usb0 (it carries our IP).
 	ln -sf /dev/null "$ROOT/etc/systemd/network/99-default.link"
 	ln -sf /usr/share/zoneinfo/UTC "$ROOT/etc/localtime"
@@ -163,12 +208,72 @@ stage_config() {
 	log "units"
 	systemctl --root="$ROOT" enable systemd-networkd.service sshd.service bluetooth.service \
 		seatd.service iwd.service phone-telnetd.service getty@tty1.service \
-		serial-getty@ttyGS0.service
+		serial-getty@ttyGS0.service omarchy-phone-bt-keys.service omarchy-phone-bt-address.service
 	systemctl --root="$ROOT" mask systemd-networkd-wait-online.service systemd-firstboot.service
 	systemctl --root="$ROOT" --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
-	printf 'omarchy-phone userland %s (built on %s)\n' "$(date -u +%Y%m%dT%H%MZ)" "$(uname -n)" \
-		> "$ROOT/etc/omarchy-phone-release"
+	# The phone session starts at boot for $USERNAME only (not --global: root's
+	# user manager from an SSH login must not start a second Hyprland).
+	# Disable on the phone: systemctl --user disable --now omarchy-phone-session
+	install -d -m 755 -o "$uid" -g "$gid" "$ROOT/home/$USERNAME/.config/systemd" \
+		"$ROOT/home/$USERNAME/.config/systemd/user" "$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants"
+	ln -sfn /etc/systemd/user/omarchy-phone-session.service \
+		"$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants/omarchy-phone-session.service"
+	chown -h "$uid:$gid" "$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants/omarchy-phone-session.service"
+	# Filled at deploy time (push-rootfs.sh -> stage2.sh seed): bt-address, bt-keys.tgz.
+	install -d -m 700 -o 0 -g 0 "$ROOT/etc/omarchy-phone"
+	{ printf 'omarchy-phone userland %s (built on %s)\n' "$(date -u +%Y%m%dT%H%MZ)" "$(uname -n)"
+	  cat "$OUT/ophone-revs"; } > "$ROOT/etc/omarchy-phone-release"
 	umount_chroot
+}
+
+# Omarchy Phone shell + Phone app -> /usr/share/omarchy-phone/{shell,apps/phone}.
+stage_config_phone() {
+	log "omarchy-phone shell + Phone app ($(tr '\n' ' ' < "$OUT/ophone-revs"))"
+	local d="$ROOT/usr/share/omarchy-phone" f pkg
+	rm -rf "$d"; mkdir -p "$d"
+	tar --no-same-owner -xf "$OUT/ophone-shell.tar" -C "$d" --exclude=shell/preview
+	tar --no-same-owner -xf "$OUT/ophone-app.tar" -C "$d" \
+		--exclude=apps/phone/tests --exclude=apps/phone/scripts --exclude=apps/phone/.gitignore
+	cp "$OUT/ophone-revs" "$d/REVISIONS"
+	# Launchers resolve their tree with readlink -f, so symlinks work.
+	for f in ophone-ctl ophone-sys; do ln -sf "/usr/share/omarchy-phone/shell/bin/$f" "$ROOT/usr/local/bin/$f"; done
+	for f in omarchy-phone phoned phonectl; do ln -sf "/usr/share/omarchy-phone/apps/phone/bin/$f" "$ROOT/usr/local/bin/$f"; done
+	install -D -m 644 "$d/apps/phone/data/org.omarchy.Phone.desktop" "$ROOT/usr/share/applications/org.omarchy.Phone.desktop"
+	# System files the shell needs from the image (shell/system/README.md).
+	install -D -m 644 "$d/shell/system/logind-ophone.conf" "$ROOT/etc/systemd/logind.conf.d/omarchy-phone.conf"
+	install -D -m 644 "$d/shell/system/pam/ophone-lock" "$ROOT/etc/pam.d/ophone-lock"
+	chown -R 0:0 "$d"
+	in_root python3 -m compileall -q /usr/share/omarchy-phone/apps/phone/omarchy_phone >/dev/null \
+		|| die "python3 compileall of the Phone app failed"
+	# Font subset (see FONT_FILES).
+	mkdir -p "$ROOT/usr/share/fonts/omarchy-phone"
+	for pkg in $FONT_PKGS; do
+		f="$(ls "$OUT"/cache/"$pkg"-[0-9]*.pkg.tar.* 2>/dev/null | grep -v '\.sig$' | sort -V | tail -1)"
+		[ -n "$f" ] || die "font package $pkg not in $OUT/cache (run the install stage)"
+		bsdtar -xf "$f" -C "$ROOT/usr/share/fonts/omarchy-phone" --strip-components 4 \
+			$(for x in $FONT_FILES; do bsdtar -tf "$f" | grep "/$x\$"; done)
+	done
+	for x in $FONT_FILES; do [ -s "$ROOT/usr/share/fonts/omarchy-phone/$x" ] || die "font $x missing"; done
+	chown -R 0:0 "$ROOT/usr/share/fonts/omarchy-phone"
+	in_root fc-cache -s >/dev/null 2>&1 || log "fc-cache failed (fontconfig rebuilds its cache at runtime)"
+}
+
+# Out-of-tree phone drivers -> /lib/modules/$KREL/extra (+ depmod). Load order:
+# overlay/etc/modules-load.d/omarchy-phone.conf, softdep in modprobe.d.
+stage_config_modules() {
+	log "kernel modules for $KREL: $(for m in $KMODS; do basename "$m" .ko; done | tr '\n' ' ')"
+	local d="$ROOT/usr/lib/modules/$KREL" m f
+	rm -rf "$d"; mkdir -p "$d/extra"
+	for m in $KMODS; do install -m 644 "$KBUILD/$m" "$d/extra/"; done
+	# So modprobe knows what is built in (hci_uart, btbcm, ...), and depmod doesn't warn.
+	for f in modules.builtin modules.builtin.modinfo; do
+		[ -e "$KBUILD/$f" ] && install -m 644 "$KBUILD/$f" "$d/"
+	done
+	: > "$d/modules.order"   # the kernel's lists in-tree .ko paths that aren't shipped
+	local map=(); [ -e "$KBUILD/System.map" ] && map=(-F "$KBUILD/System.map")
+	depmod -b "$ROOT" "${map[@]}" "$KREL" || die "depmod for $KREL failed"
+	grep -q gpio-apple-pmic "$d/modules.dep" || die "depmod wrote no modules.dep entries"
+	chown -R 0:0 "$d"
 }
 
 stage_strip() {
@@ -180,7 +285,15 @@ stage_strip() {
 	  find usr/share/locale -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} + 2>/dev/null || :
 	  find usr/lib -name '*.a' -type f -delete
 	  # Default Hyprland wallpapers (config sets force_default_wallpaper = 0).
-	  rm -f usr/share/hypr/wall*.png )
+	  rm -f usr/share/hypr/wall*.png
+	  # Python: test suite, IDLE, Tk (no libtk), pip wheels, and the -O/-OO
+	  # bytecode (24 MB; only used with python -O).
+	  for py in usr/lib/python3.*; do
+		rm -rf "$py"/test "$py"/idlelib "$py"/tkinter "$py"/turtledemo "$py"/ensurepip "$py"/lib-dynload/_tkinter*
+		find "$py" -name '*.opt-[12].pyc' -delete
+	  done
+	  # Qt: build-time data and developer tools (the shell runs from QML source).
+	  rm -rf usr/lib/qt6/mkspecs usr/lib/qt6/metatypes usr/lib/qt6/modules usr/lib/qt6/sbom usr/lib/cmake )
 }
 
 stage_check() {
