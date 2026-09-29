@@ -52,6 +52,10 @@ kit/boot.sh linux               # send the blob and bootm (Ctrl+C once m1n1 star
 telnet 172.16.42.1              # or: kit/boot.sh shell  (USB serial)
 ```
 
+After that first boot, new kernels don't need DFU: `kit/reload.sh` kexecs a fresh Image + DTB
+into the running phone in under a minute ([`docs/fast-reload.md`](docs/fast-reload.md)). The
+running kernel needs the spin-table park patch from `patches/fast-reload/`.
+
 The host gets `172.16.42.2` over USB networking. Driver authors: read
 [`testkit/TESTING-RULES.md`](testkit/TESTING-RULES.md) before running anything on the phone, and
 [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) before opening a PR.
@@ -60,6 +64,7 @@ The host gets `172.16.42.2` over USB networking. Driver authors: read
 
 ```
 kit/boot.sh          build + tethered boot
+kit/reload.sh        kexec a new kernel + DTB without DFU (kit/fast-reload/: loader, DT merge)
 testkit/             phone.sh / phone.py (safe live-test access), kbuild.sh (out-of-tree modules),
                      dtbo_loader (apply DT overlays at runtime), hello (vermagic check), overlays/
 tools/               Apple device-tree (ADT) parsers
