@@ -107,10 +107,10 @@ one-shot test module):
    `btmgmt le on`, `ssp on`, then `btmgmt find` (LE + BR/EDR discovery):
    ```
    hci0 type 7 discovering on
-   hci0 dev_found: BE:16:11:00:6F:C3 type LE Public rssi -88 ... name MELK-OF21C3
-   hci0 dev_found: 02:24:05:13:F7:30 type LE Public rssi -78 ... name BJ_LED_M
-   hci0 dev_found: D7:26:FA:4D:FA:2D type LE Random rssi -87 ... name N0A7T
-   hci0 dev_found: C3:45:48:5D:59:CD type LE Random rssi -87 ... name N0GZE
+   hci0 dev_found: XX:XX:XX:XX:XX:XX type LE Public rssi -88 ... name MELK-OF21C3
+   hci0 dev_found: XX:XX:XX:XX:XX:XX type LE Public rssi -78 ... name BJ_LED_M
+   hci0 dev_found: XX:XX:XX:XX:XX:XX type LE Random rssi -87 ... name N0A7T
+   hci0 dev_found: XX:XX:XX:XX:XX:XX type LE Random rssi -87 ... name N0GZE
    ... (11 LE results in ~10 s)
    hci0 type 7 discovering off
    ```

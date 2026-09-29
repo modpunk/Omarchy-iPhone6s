@@ -194,8 +194,8 @@
 [    0.328193] syslogd started: BusyBox v1.38.0
 [    0.332751] [HL-rd]: Setup usb network
 [    0.337750] [HL-rd]:   Setting up USB gadget through configfs
-[    0.353207] configfs-gadget.g1 gadget.0: HOST MAC c2:ec:0f:21:f1:03
-[    0.353302] configfs-gadget.g1 gadget.0: MAC a2:82:7a:db:75:14
+[    0.353207] configfs-gadget.g1 gadget.0: HOST MAC XX:XX:XX:XX:XX:XX
+[    0.353302] configfs-gadget.g1 gadget.0: MAC XX:XX:XX:XX:XX:XX
 [    0.362032] dwc2 20c100000.usbdev: bound driver configfs-gadget.g1
 [    0.379056] [HL-rd]: Starting unudhcpd with server ip 172.16.42.1, client ip: 172.16.42.2
 [    0.386301] [HL-rd]:   Using interface usb0
