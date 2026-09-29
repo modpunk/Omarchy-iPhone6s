@@ -1,0 +1,61 @@
+From 14602eec6361aac332aff3109e67e4722cdbb25a Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Mon, 28 Sep 2026 21:18:06 -0500
+Subject: [PATCH 5/5] arm64: dts: apple: s800x-6s: Add battery fuel gauge
+
+The bq27540 fuel gauge talks HDQ on uart5, whose TX (pin 2) and RX
+(pin 3) are both wired to the gauge. iBoot leaves RX as a GPIO, so mux
+both pins. The line passes through a switch in the SN2400 charger on
+i2c1, which the gauge claims through its mux-state.
+
+Depends on the serial5 node from "arm64: dts: apple: s800-0-3: Add
+uart1, uart3-uart6 nodes".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ arch/arm64/boot/dts/apple/s800x-6s.dtsi | 31 +++++++++++++++++++++++++
+ 1 file changed, 31 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/apple/s800x-6s.dtsi b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+index 1ac114eecd26..eb0282f0b055 100644
+--- a/arch/arm64/boot/dts/apple/s800x-6s.dtsi
++++ b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+@@ -84,3 +84,34 @@ rtc_offset: rtc-offset@4 {
+ 		};
+ 	};
+ };
++
++&i2c1 {
++	status = "okay";
++
++	/* The charger switches the fuel gauge's HDQ line */
++	charger: charger@75 {
++		compatible = "ti,sn2400";
++		reg = <0x75>;
++		#mux-state-cells = <1>;
++	};
++};
++
++&pinctrl_ap {
++	/* TX and RX are both wired to the fuel gauge's HDQ line */
++	uart5_pins: uart5-pins {
++		pinmux = <APPLE_PINMUX(2, 1)>,
++			 <APPLE_PINMUX(3, 1)>;
++	};
++};
++
++&serial5 {
++	pinctrl-0 = <&uart5_pins>;
++	pinctrl-names = "default";
++	status = "okay";
++
++	fuel-gauge {
++		compatible = "ti,bq27540-hdq";
++		/* HDQ line connected to the application processor */
++		mux-states = <&charger 1>;
++	};
++};
+-- 
+2.55.0
+

@@ -1,0 +1,67 @@
+/dts-v1/;
+/plugin/;
+/*
+ * iPhone 6s (N71) battery fuel gauge, live-test overlay.
+ *
+ * Apply ONCE per boot and never remove it: removing a bound samsung-uart
+ * overlay oopses the kernel (s3c24xx_serial_remove).
+ *
+ * The running DT has no __symbols__, so it uses raw phandles read from the
+ * phone:
+ *   0x01   aic
+ *   0x05   clkref (24 MHz)
+ *   0xf040 ps_uart5 (only after foundation's fnd_phandle module ran; check
+ *          /proc/device-tree/soc/power-management@20e000000/power-controller@80200/phandle)
+ * i2c1 already carries its pinctrl and ps_i2c1 references.
+ * Build without -@ (the live tree has no /__symbols__ to merge into).
+ */
+/ {
+	/* uart5 TX = pin 2, RX = pin 3 (iBoot leaves RX as a GPIO) */
+	fragment@0 {
+		target-path = "/soc/pinctrl@20f100000";
+		__overlay__ {
+			uart5_pins: uart5-pins {
+				pinmux = <0x10002>, <0x10003>;
+			};
+		};
+	};
+
+	/* SN2400 "Tigris" charger: owns the switch in front of the HDQ line */
+	fragment@1 {
+		target-path = "/soc/i2c@20a111000";
+		__overlay__ {
+			status = "okay";
+
+			charger: charger@75 {
+				compatible = "ti,sn2400";
+				reg = <0x75>;
+				#mux-state-cells = <1>;
+			};
+		};
+	};
+
+	fragment@2 {
+		target-path = "/soc";
+		__overlay__ {
+			serial@20a0d4000 {
+				compatible = "apple,s5l-uart";
+				reg = <0x2 0x0a0d4000 0x0 0x4000>;
+				reg-io-width = <4>;
+				interrupt-parent = <0x01>;
+				interrupts = <0 197 4>;
+				clocks = <0x05>, <0x05>;
+				clock-names = "uart", "clk_uart_baud0";
+				power-domains = <0xf040>;
+				pinctrl-0 = <&uart5_pins>;
+				pinctrl-names = "default";
+				status = "okay";
+
+				fuel-gauge {
+					compatible = "ti,bq27540-hdq";
+					/* state 1: line connected to the host */
+					mux-states = <&charger 1>;
+				};
+			};
+		};
+	};
+};

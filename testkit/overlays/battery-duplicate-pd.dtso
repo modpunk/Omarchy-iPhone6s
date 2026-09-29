@@ -1,0 +1,47 @@
+/dts-v1/;
+/plugin/;
+/*
+ * Throwaway live-test overlay for the iPhone 6s (N71) battery gauge.
+ * The running DT has no __symbols__, so raw phandles read from the phone:
+ *   0x01 = aic, 0x05 = clkref (24 MHz), 0x13 = ps_sio_p.
+ * The real ps_uart5 node has no phandle in the live DT (nothing references
+ * it), so a second pwrstate node for the same PMGR register is added here
+ * and used instead. The real DT uses <&ps_uart5>.
+ */
+/ {
+	fragment@0 {
+		target-path = "/soc/power-management@20e000000";
+		__overlay__ {
+			ps_uart5_hdq: power-controller-hdq@80200 {
+				compatible = "apple,s8000-pmgr-pwrstate", "apple,pmgr-pwrstate";
+				reg = <0x80200 4>;
+				#power-domain-cells = <0>;
+				#reset-cells = <0>;
+				label = "uart5-hdq";
+				power-domains = <0x13>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc";
+		__overlay__ {
+
+			serial@20a0d4000 {
+				compatible = "apple,s5l-uart";
+				reg = <0x2 0x0a0d4000 0x0 0x4000>;
+				reg-io-width = <4>;
+				interrupt-parent = <0x01>;
+				interrupts = <0 197 4>;
+				clocks = <0x05>, <0x05>;
+				clock-names = "uart", "clk_uart_baud0";
+				power-domains = <&ps_uart5_hdq>;
+				status = "okay";
+
+				battery {
+					compatible = "ti,bq27540-hdq";
+				};
+			};
+		};
+	};
+};
