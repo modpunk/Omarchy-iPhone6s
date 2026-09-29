@@ -82,6 +82,18 @@ Every kernel you reload **must also carry the patch**, or the reload after it wi
 you are back to DFU. Add it to other branches with `git cherry-pick 6s/fast-reload` or
 `git am patches/fast-reload/*.patch`.
 
+### First test on the device, in order
+
+```sh
+testkit/phone.sh run 'grep "spin-table park" /proc/iomem; dmesg | grep -i "spin-table park"; cat /sys/devices/system/cpu/online'
+#   expect: "spin-table park: [mem 0x8...] (allocated)", online 0-1
+testkit/phone.sh lock 'echo 0 > /sys/devices/system/cpu/cpu1/online; cat /sys/devices/system/cpu/online; echo 1 > /sys/devices/system/cpu/cpu1/online; cat /sys/devices/system/cpu/online'
+#   park round trip without kexec. expect: 0, then 0-1
+kit/reload.sh -n       # delta should be m1n1 fixups only (memory, reserved-memory, chosen, fb, cpus)
+kit/reload.sh          # expect "(inherited)" park line, online 0-1, new uname -v
+kit/reload.sh          # second hop: the base is now found through fast-reload,base
+```
+
 ## Everyday use
 
 ```sh
