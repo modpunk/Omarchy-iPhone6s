@@ -9,3 +9,8 @@ libtsan
 libubsan
 libgfortran
 libobjc
+# Omarchy Phone (quickshell, gtk4, libadwaita deps that nothing in the image links)
+xdg-desktop-portal-gtk   # a portal service (gtk4 dep); would pull gtk3 + xdg-desktop-portal
+xdg-utils                # scripts only (qt6-base)
+qt6-translations         # translations are stripped anyway
+libvips                  # appstream dep, but no ELF links it; pulls imath, openexr, hdf5, ... (~90 MB)

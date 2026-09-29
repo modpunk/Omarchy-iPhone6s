@@ -3,6 +3,8 @@
 # on the phone yet). seatd hands out the seat, so no VT login is needed.
 #   ssh omarchy@172.16.42.1 phone-hyprland        (log: ~/.cache/hyprland.log)
 #   ssh omarchy@172.16.42.1 pkill -x Hyprland     (stop)
+# ~/.config/hypr/hyprland.lua starts the Omarchy Phone shell (QuickShell) with
+# the iphone6s device profile; PHONE_PLAIN=1 starts the plain foot session.
 set -eu
 export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 export LIBSEAT_BACKEND="${LIBSEAT_BACKEND:-seatd}"
@@ -19,6 +21,13 @@ export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
 export LIBGL_ALWAYS_SOFTWARE=1
 export AQ_NO_MODIFIERS=1
 export XDG_SESSION_TYPE=wayland
+# Phone shell: device profile and install dir (read by its hyprland.lua).
+export OPHONE_DEVICE="${OPHONE_DEVICE:-iphone6s}"
+export OPHONE_SHELL="${OPHONE_SHELL:-/usr/share/omarchy-phone/shell}"
+# The shell owns org.freedesktop.Notifications on the session bus.
+if [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ] && [ -S "$XDG_RUNTIME_DIR/bus" ]; then
+	export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+fi
 # aquamarine retries a (never available) EGL device renderer on every commit
 # on simpledrm; the shim stops that (source: tools/userland/shim/aq-simpledrm.c).
 shim="${PHONE_AQ_SHIM:-/usr/lib/phone-tk/aq-simpledrm.so}"
