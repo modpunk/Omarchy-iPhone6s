@@ -93,13 +93,20 @@ already agreed are safe to repeat:
   boot>`, which only writes if the register still reads exactly what was just read (the same
   guard the module's own comment describes), then leaves the clock running.
 
-These three are the "approved-writes list" the task that produced this harness referred to as
-"`TESTING-RULES` rule 13". **As of this commit, `testkit/TESTING-RULES.md` only has 12 numbered
-rules** (checked against `main` and every other branch in this repo) -- rule 13 had apparently
-been agreed live but not yet written down anywhere this build-only pass could read. Whoever lands
-rule 13 should reconcile its exact wording against the three writes above (and this file), and
-this script's `MUX_KO`/`PMIC_GPIO_KO`/`TCLK_KO` variables are the places to adjust if it turns out
-to cover something different.
+`testkit/TESTING-RULES.md` now has 13 numbered rules; rule 13 (added 2026-09-29) is the
+committed power-chip write policy. It names D2255 PMIC GPIO 8 (BT `REG_ON`) and GPIO 10 (WLAN
+`REG_ON`), SN2400 charger reg `0x1d` (the HDQ handover values), and display-PMU (chestnut) reg
+`0x05` bit 4 (the touch analog supply) -- one write at a time, read back before and after, log
+it, restore the original value when the test ends. Of this script's three `--write` actions, the
+SN2400 `0x1d` write and the PMIC GPIO 8 write are the ones rule 13 explicitly covers; the PMGR
+touch-clock (TCLK) enable is a different register domain (not one of the i2c0/1/2 power chips
+rule 13 lists), so it is governed by rule 7 rather than rule 13. This script's
+`MUX_KO`/`PMIC_GPIO_KO`/`TCLK_KO` variables are the places to adjust if that mapping ever changes.
+
+Rule 13 also now pre-approves the chestnut `0x05` bit 4 write described next, under the same
+one-write/read-back/restore discipline -- but this script still does not perform it
+automatically (see below); `TOUCH_SUPPLY_CMD` stays a per-session, explicitly-supplied command
+rather than something `--write` does on its own.
 
 **Not performed, even under `--write`:** the Chestnut display-PMU touch-analog LDO enable (i2c0
 0x27, register 0x05, `|= 0x10`) and any D2255 touch-core power-cycle. `docs/drivers/touch.md`

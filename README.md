@@ -31,9 +31,10 @@ Nothing is written to the phone's storage. Reboot it and it is an iPhone again.
 ## What it is not (yet)
 
 A daily-driver phone. There is no GPU driver (PowerVR GT7600), so Hyprland renders in software
-with Mesa llvmpipe. There is no storage or Wi-Fi driver (both sit behind the A9's PCIe block), so
-the whole system lives in RAM and is pushed over USB each boot. The touchscreen and battery
-charging don't work yet (see below). Input today is a Bluetooth keyboard.
+with Mesa llvmpipe. There is no storage, Wi-Fi or modem driver (all three sit behind the A9's
+PCIe block), so the whole system lives in RAM and is pushed over USB each boot. The touchscreen
+isn't usable yet and battery charging doesn't work reliably under Linux (see below). Input today
+is a Bluetooth keyboard.
 
 ## Status
 
@@ -41,17 +42,23 @@ Tested on one iPhone 6s (N71, Samsung), kernel `7.3.0-rc1-g6831bc701a6c`.
 
 | | |
 |---|---|
-| **Works, verified on the phone** | simpledrm display (750x1334), all 5 buttons, backlight, PMIC RTC (set from the host each boot), watchdog, both CPU cores, 2 GB RAM, USB networking + serial, extra UART buses, **Bluetooth** (BCM4350, LE scan, BLE keyboard via uhid), **battery gauge** (bq27540 over HDQ through the charger's line switch: %, voltage, current, temperature, health), **SPI controller**, **fast kernel reload** without DFU (kexec with a spin-table CPU park), **Arch Linux ARM userland** (systemd, sshd, BlueZ, PipeWire), **Hyprland 0.56** with software rendering and the **Omarchy Phone shell** |
-| **Blocked** | **Touchscreen**: SPI, reset, the analog supply and the input device all work, but the controller stays unpowered because the voltage code for its PMU LDO is unknown. **Charging**: the SN2400 charger is an Apple/TI custom part with no public register map, so Linux can't enable charging; charge in iOS between sessions (idle drain is about 80 mA, roughly 15 hours per charge). |
-| **Shelved** | PCIe (NVMe storage, read-only, and Wi-Fi) |
-| **Out of scope** | GPU acceleration, audio, camera, modem, sensors behind the AOP coprocessor, NFC, Secure Enclave |
+| **Works, verified on the phone** | simpledrm display (750x1334, Hyprland's `glFinish()` shim for aquamarine removes the earlier 3-frame input lag), all 5 buttons, backlight, PMIC RTC (set from the host each boot), watchdog, both CPU cores, 2 GB RAM, USB networking + serial, extra UART buses, **Bluetooth** (BCM4350; the adv-report-type quirk fix makes LE keyboard pairing complete in a few seconds), **battery gauge** (bq27540 over HDQ through the charger's line switch: %, voltage, current, temperature, health; `charge_now` fixed to read Remaining Capacity instead of the HDQ-unresponsive Nominal Available Capacity), **SPI controller**, **fast kernel reload** without DFU (kexec with a spin-table CPU park), **Arch Linux ARM userland** (systemd, sshd, BlueZ, PipeWire), **Hyprland 0.56** with software rendering and the **Omarchy Phone shell** |
+| **In progress** | **Touchscreen**: the controller is powered and reports finger contacts, but X/Y coordinate decode and `BTN_TOUCH` are not yet correct — not usable for driving the GUI yet. **Idle/display power-off**: `hypridle` + backlight/DPMS blanking on idle merged (userland), not yet re-verified on this phone. |
+| **Doesn't work reliably** | **Charging**: the SN2400 charger is an Apple/TI custom part with no public register map, so Linux can't configure it; charging only happens autonomously and has been observed to not sustain even on a supply that should provide enough current (suspected SN2400 charge watchdog, unconfirmed) — charge in iOS between sessions (idle drain under Linux is about 80 mA, roughly 15 hours per charge). |
+| **Shelved** | PCIe (NVMe storage read-only, Wi-Fi, and the cellular modem — all three sit behind the A9's PCIe block) |
+| **Out of scope** | GPU acceleration, audio, camera, sensors behind the AOP coprocessor, NFC, Secure Enclave |
+| **Tooling** | a post-boot self-test harness (`testkit/selftest.sh`, drives the phone through `testkit/phone.sh` like everything else here) and a patch-series CI that `git am`s + build-checks every series in `patches/` (build-only, never touches the phone) |
 
 Known rough edges: the Bluetooth keyboard can lose its first key presses when it reconnects
-after idling, and pairings don't survive a reload yet.
+after idling. Pairings don't survive a reload/reboot by themselves (the whole root is RAM), but
+`tools/userland/push-rootfs.sh` can carry one across sessions (`BT_KEYS_TGZ`/`BT_ADDR_FILE`,
+see [`docs/getting-started.md`](docs/getting-started.md#6-a-bluetooth-keyboard-since-theres-no-touch)).
 
 Per-driver detail lives in [`docs/drivers/`](docs/drivers/), hardware addresses in
 [`docs/hardware.md`](docs/hardware.md), the userland in [`docs/userland.md`](docs/userland.md),
-and the first successful boot in [`docs/first-boot-2026-09-28.log`](docs/first-boot-2026-09-28.log).
+the first successful boot in [`docs/first-boot-2026-09-28.log`](docs/first-boot-2026-09-28.log),
+the post-boot self-test harness in [`docs/selftest.md`](docs/selftest.md), and the patch-series
+CI gate in [`docs/CI.md`](docs/CI.md).
 
 ## Quick start
 
@@ -84,8 +91,12 @@ root filesystem over USB with `tools/userland/push-rootfs.sh --go`
 ([`docs/userland.md`](docs/userland.md)).
 
 The host gets `172.16.42.2` over USB networking. Driver authors: read
-[`testkit/TESTING-RULES.md`](testkit/TESTING-RULES.md) before running anything on the phone, and
-[`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) before opening a PR.
+[`testkit/TESTING-RULES.md`](testkit/TESTING-RULES.md) (13 rules, including rule 13 on the
+approved power-chip write list) before running anything on the phone, run
+[`testkit/selftest.sh`](docs/selftest.md) after a fresh boot to check every driver known to
+work, and read [`docs/CONTRIBUTING.md`](docs/CONTRIBUTING.md) before opening a PR — patch series
+under `patches/` are also checked by CI on every push (build-only, never touches the phone; see
+[`docs/CI.md`](docs/CI.md)).
 
 ## Layout
 
@@ -93,11 +104,14 @@ The host gets `172.16.42.2` over USB networking. Driver authors: read
 kit/boot.sh          build + tethered boot
 kit/reload.sh        kexec a new kernel + DTB without DFU (kit/fast-reload/: loader, DT merge)
 testkit/             phone.sh / phone.py (safe live-test access), kbuild.sh (out-of-tree modules),
-                     dtbo_loader (apply DT overlays at runtime), hello (vermagic check), overlays/
+                     dtbo_loader (apply DT overlays at runtime), hello (vermagic check), overlays/,
+                     selftest.sh + selftest-phone.sh (post-boot self-test), TESTING-RULES.md
 tools/               Apple device-tree (ADT) parsers, firmware extraction scripts
 tools/userland/      Arch Linux ARM RAM userland (systemd, sshd, Hyprland) + switch_root kit
 patches/<driver>/    git format-patch series against HoolockLinux/linux 6831bc701
-docs/                hardware inventory, first-boot log, driver notes, userland, contributing guide
+.github/workflows/   patch-series-ci.yml: git am + build-check every series in patches/ (CI)
+docs/                hardware inventory, first-boot log, driver notes, userland, self-test harness,
+                     patch-series CI, contributing guide
 brand/               the Omarchy Phone logo (derived from Omarchy's artwork, see below)
 ```
 

@@ -18,16 +18,16 @@ read with `tools/adt2.py` (see `tools/README.md` to extract your own), the runni
 | bus   | phys          | AIC irq | PMGR gate | Linux status |
 |-------|---------------|---------|-----------|--------------|
 | uart0 | 0x20a0c0000   | 192     | 80        | works (`serial0`, debug console) |
-| uart1 | 0x20a0c4000   | 193     | 81        | in progress (`serial1`, Bluetooth) |
+| uart1 | 0x20a0c4000   | 193     | 81        | works (`serial1`, Bluetooth) |
 | uart3 | 0x20a0cc000   | 195     | 83        | in progress (`serial3`, NFC lives here) |
 | uart4 | 0x20a0d0000   | 196     | 84        | in progress (`serial4`, Wi-Fi side channel) |
-| uart5 | 0x20a0d4000   | 197     | 85        | in progress (`serial5`, battery gauge) |
+| uart5 | 0x20a0d4000   | 197     | 85        | works (`serial5`, battery gauge) |
 | uart6 | 0x20a0d8000   | 198     | 86        | in progress (`serial6`, iAP / Lightning accessories) |
 | spi1  | 0x20a084000   | 189     | 75        | not yet (`spi1`) |
 | spi2  | 0x20a088000   | 190     | 76        | in progress (`spi2`, touch) |
 | spi3  | 0x20a08c000   | 191     | 77        | not yet (`spi3`) |
 | i2c0  | 0x20a110000   | 206     | -         | works (`i2c-apple`, PMIC) |
-| i2c1  | 0x20a111000   | 207     | -         | not yet |
+| i2c1  | 0x20a111000   | 207     | -         | in progress (SN2400 charger HDQ line-switch handover works; other i2c1 devices not yet) |
 | i2c2  | 0x20a112000   | 208     | -         | not yet |
 | apcie | ADT `apcie,s8000`, 4 ports | 244, 247, 250, 253 | - | in progress (Apple A9 PCIe is not the M1 block) |
 | USB   | 0x20c100000 (dwc2 device) | 214 | - | works (gadget: NCM + ACM) |
@@ -45,9 +45,9 @@ by register offset. Labels `serial1`..`serial6` and `spi1`..`spi3` are fixed so 
 | PMIC | `i2c0/pmu` (`pmu,d2255`) | i2c0 @0x74 | Dialog 338S00120 | RTC works (`rtc-apple-pmic`); fixes pending (bad cell count, RTC offset) |
 | Buttons | `buttons` | GPIO | - | works (`gpio-keys`, all 5) |
 | Watchdog | `wdt` (`wdt,s8000`) | 0x2102b0000 | - | works (`apple-watchdog`) |
-| Battery gauge | `uart5/gas-gauge` (`gas-gauge,bq27540`, HDQ) | uart5 | TI bq27540 | in progress (1-Wire over UART + `bq27xxx` HDQ) |
-| Charger | `i2c1/tigris` (`charger,sn2400`) | i2c1 @0x75 | TI SN2400 | not yet |
-| Bluetooth | `uart1/bluetooth` (`bluetooth,n88`) | uart1 | USI 339S00043 (Broadcom BCM4350) | in progress (`hci_bcm` serdev; firmware extracted locally, never committed) |
+| Battery gauge | `uart5/gas-gauge` (`gas-gauge,bq27540`, HDQ) | uart5 | TI bq27540 | works (1-Wire over UART + `bq27xxx` HDQ; `charge_now` fixed to read RC instead of the unanswering NAC, see `docs/drivers/battery.md`) |
+| Charger | `i2c1/tigris` (`charger,sn2400`) | i2c1 @0x75 | TI SN2400 | HDQ line-switch handover works from Linux, but the charger itself isn't configurable (no public register map) and charging doesn't reliably sustain (suspected charge watchdog, unconfirmed) |
+| Bluetooth | `uart1/bluetooth` (`bluetooth,n88`) | uart1 | USI 339S00043 (Broadcom BCM4350) | works (`hci_bcm` serdev; adv-report-type quirk fix makes LE keyboard pairing succeed; firmware extracted locally, never committed) |
 | Wi-Fi | `apcie/pci-bridge1/wlan` (`wlan-pcie,bcm4350`) | PCIe port 1 | USI 339S00043 (Broadcom BCM4350) | in progress (needs PCIe; `brcmfmac`) |
 | Storage | `apcie/pci-bridge0/s3e`, `nvme-mmu0` | PCIe port 0 | Toshiba THGBX5G7D2KLFXG 16 GB NAND, Apple ANS2 NVMe | in progress, **read-only** (holds iOS) |
 | Touch | `spi2/multi-touch` (`multi-touch,n71,2`) | spi2 | 343S00014 (3D Touch), Apple multitouch | in progress (protocol vs `apple_z2` unverified) |
@@ -58,7 +58,7 @@ by register offset. Labels `serial1`..`serial6` and `spi1`..`spi3` are fixed so 
 | Ambient light | `i2c2/als` (`als,ct821`) | i2c2 @0x29 | - | not yet |
 | Motion sensors | `aop/iop-aop-nub/{accel,gyro,compass,pressure}` | AOP coprocessor | InvenSense MP67B (gyro/accel), compass, barometer | out of scope (behind AOP firmware) |
 | NFC | `uart3/stockholm` (`nfc,primary,gpio`) | uart3 | NXP 66V10 | out of scope |
-| Modem | `apcie/pci-bridge2/baseband-pcie`, `baseband` | PCIe port 2 | Qualcomm MDM9635M | out of scope |
+| Modem | `apcie/pci-bridge2/baseband-pcie`, `baseband` | PCIe port 2 | Qualcomm MDM9635M | in progress (needs PCIe, same as Wi-Fi/storage above; not out of scope, just not yet) |
 | GPU | `sgx` (`gpu,s8000`) | AIC 170-174 | PowerVR GT7600 | out of scope (no open driver) |
 | Camera / ISP | `isp`, `dart-isp` | - | - | out of scope |
 | Secure Enclave | `sep` | - | - | out of scope |
