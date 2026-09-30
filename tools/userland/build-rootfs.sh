@@ -165,7 +165,7 @@ stage_config() {
 	# Overlay files arrive owned by the building user (= ns uid 0 already).
 	chown -R 0:0 "$ROOT/etc/systemd" "$ROOT/etc/ssh" "$ROOT/etc/sudoers.d" "$ROOT/etc/iwd" \
 		"$ROOT/etc/xdg" "$ROOT/etc/skel" "$ROOT/usr/local" "$ROOT/usr/lib/phone-tk" \
-		"$ROOT/etc/modules-load.d" "$ROOT/etc/modprobe.d"
+		"$ROOT/etc/modules-load.d" "$ROOT/etc/modprobe.d" "$ROOT/etc/sysctl.d"
 	stage_config_phone
 	stage_config_modules
 	# No predictable interface renames: usb0 must stay usb0 (it carries our IP).
@@ -324,7 +324,48 @@ stage_strip() {
 		find "$py" -name '*.opt-[12].pyc' -delete
 	  done
 	  # Qt: build-time data and developer tools (the shell runs from QML source).
-	  rm -rf usr/lib/qt6/mkspecs usr/lib/qt6/metatypes usr/lib/qt6/modules usr/lib/qt6/sbom usr/lib/cmake )
+	  rm -rf usr/lib/qt6/mkspecs usr/lib/qt6/metatypes usr/lib/qt6/modules usr/lib/qt6/sbom usr/lib/cmake
+	  # Qt: the rest of the SDK (moc/uic/rcc/qmlcachegen/...), Qt Creator's
+	  # qmllint/qmlls/qmltooling plugins, and QML's own test module -- none of
+	  # it runs when Quickshell loads QML at runtime (~21 MB).
+	  rm -rf usr/lib/qt6/bin usr/lib/qt6/moc usr/lib/qt6/uic usr/lib/qt6/rcc \
+		usr/lib/qt6/qmlcachegen usr/lib/qt6/qmlimportscanner usr/lib/qt6/qmltyperegistrar \
+		usr/lib/qt6/qmlaotstats usr/lib/qt6/cmake_automoc_parser usr/lib/qt6/qlalr \
+		usr/lib/qt6/qmljsrootgen usr/lib/qt6/qtwaylandscanner usr/lib/qt6/qvkgen \
+		usr/lib/qt6/syncqt usr/lib/qt6/tracegen usr/lib/qt6/tracepointgen \
+		usr/lib/qt6/qt-cmake-private* usr/lib/qt6/qt-cmake-standalone-test \
+		usr/lib/qt6/qt-internal-configure-* usr/lib/qt6/qt_cyclonedx_generator.py \
+		usr/lib/qt6/qt-android-runner.py usr/lib/qt6/qml/QmlTime usr/lib/qt6/qml/QtTest \
+		usr/lib/qt6/plugins/qmllint usr/lib/qt6/plugins/qmlls usr/lib/qt6/plugins/qmltooling
+	  # Qt platform/QPA plugins for backends this image never selects
+	  # (QT_QPA_PLATFORM=wayland, hypr/hyprland.lua) or features nothing here
+	  # uses (printing, Qt SQL, X11, eglfs/linuxfb, an input-method framework,
+	  # TLS/network-info -- no QML here touches Qt Network) (~13 MB).
+	  rm -rf usr/lib/qt6/plugins/printsupport usr/lib/qt6/plugins/sqldrivers \
+		usr/lib/qt6/plugins/networkinformation usr/lib/qt6/plugins/platformthemes \
+		usr/lib/qt6/plugins/xcbglintegrations usr/lib/qt6/plugins/egldeviceintegrations \
+		usr/lib/qt6/plugins/generic usr/lib/qt6/plugins/platforminputcontexts \
+		usr/lib/qt6/plugins/tls
+	  find usr/lib/qt6/plugins/platforms -type f ! -name 'libqwayland.so' -delete 2>/dev/null || :
+	  # gettext: keep gettext/ngettext/envsubst/gettext.sh (scripts use these);
+	  # xgettext and the msg* PO tool chain are translation-authoring tools,
+	  # never run on the device (~15.5 MB, xgettext alone is 14 MB).
+	  rm -f usr/bin/xgettext usr/bin/msg* usr/bin/autopoint usr/bin/gettextize \
+		usr/bin/recode-sr-latin usr/bin/spit usr/bin/po-fetch \
+		usr/bin/printf_gettext usr/bin/printf_ngettext
+	  # gtk4's icon-encoder and librsvg's standalone CLI are build-time tools;
+	  # nothing in the shell or Phone app shells out to either (~18 MB).
+	  rm -f usr/bin/gtk4-encode-symbolic-svg usr/bin/rsvg-convert
+	  # sqlite's analysis/debug CLIs (sqldiff, showdb, showwal, dbdump, dbhash,
+	  # index_usage, sqlite3_expert, sqlite3_rsync); the Phone app uses
+	  # Python's sqlite3 module, not these. Keep the sqlite3 CLI itself for
+	  # on-device debugging over ssh (~12.8 MB).
+	  rm -f usr/bin/sqldiff usr/bin/showdb usr/bin/showwal usr/bin/showjournal \
+		usr/bin/showstat4 usr/bin/dbdump usr/bin/dbhash usr/bin/index_usage \
+		usr/bin/sqlite3_expert usr/bin/sqlite3_rsync
+	  # libcap's process-capability-tree viewer, a debug tool nothing here
+	  # calls; getcap/setcap stay (docs/userland.md references them) (~2 MB).
+	  rm -f usr/bin/captree )
 }
 
 stage_check() {

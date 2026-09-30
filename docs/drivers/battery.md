@@ -5,7 +5,9 @@
 > 0001-0004 apply and build on `6831bc701` alone. Patch 0005 (the DT) applies
 > with `git am`, but the dtb only builds once `serial5` exists.
 
-**Status:** blocked, not yet working on the phone. No battery readings yet. The code builds; the only live run (v1, before the line switch was known) got no echo. The fix (SN2400 line switch + RX pinmux) is written and builds, but the phone had to be rebooted before it could be tested.
+**Status:** works on the phone (2026-09-29). With the SN2400 line switch and RX pinmux, the gauge answers over HDQ and `/sys/class/power_supply/bq27540-0` reports capacity, voltage, current, temperature, health, full/design charge and cycle count (first live readings: 21 %, 3.70 V, −112 mA, 29.6 °C, 1468/1690 mAh, 798 cycles). The image loads `mux-sn2400` then `bq27xxx_battery_hdq_uart` at boot. Charging itself is autonomous in the SN2400 and needs a supply with enough current: on a self-powered USB hub the gauge shows `Charging` at about +300 mA; an unpowered port only covers the load.
+
+The history below records how it got there (the first live run got no echo because the charger holds the HDQ line until asked to hand it over).
 
 ## What
 

@@ -1,0 +1,26 @@
+#!/bin/bash
+# omarchy:summary=Restart the Omarchy Phone shell
+# Phone version of Omarchy's omarchy-restart-shell: restarts the Omarchy Phone
+# shell (QuickShell). The shell reads the theme's colors.toml when it starts;
+# its file watch doesn't survive omarchy-theme-set replacing the theme
+# directory, so a theme change needs this restart to show (the theme-set hook
+# calls it). The new shell gets the old one's environment (Hyprland's hl.env
+# settings such as QT_QUICK_BACKEND=software), so this also works over SSH.
+set -uo pipefail
+shell="${OPHONE_SHELL:-/usr/share/omarchy-phone/shell}"
+pat="qs -p $shell/qs\$"
+if qs -p "$shell/qs" ipc call shell isLocked 2>/dev/null | grep -qx true; then
+  echo "omarchy-restart-shell: the phone is locked; not restarting the shell" >&2; exit 1
+fi
+pid=$(pgrep -u "$(id -u)" -of "$pat")
+envs=()
+if [[ -n $pid ]]; then
+  mapfile -d '' -t envs < "/proc/$pid/environ"
+  kill "$pid"
+  for _ in $(seq 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+elif [[ -n ${WAYLAND_DISPLAY:-} ]]; then
+  mapfile -d '' -t envs < <(env -0)
+else
+  echo "omarchy-restart-shell: no phone shell running and no Wayland session here" >&2; exit 1
+fi
+env -i "${envs[@]}" setsid -f qs -p "$shell/qs" >/dev/null 2>&1 </dev/null

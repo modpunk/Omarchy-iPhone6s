@@ -1,0 +1,13 @@
+# Omarchy helper names that become omarchy-core-noop on the phone (see that
+# script): omarchy-theme-set and omarchy-font-set call them.
+omarchy-restart-hyprctl
+omarchy-restart-opencode
+omarchy-restart-helix
+omarchy-theme-set-pi
+omarchy-theme-set-claude
+omarchy-theme-set-browser
+omarchy-theme-set-vscode
+omarchy-theme-set-obsidian
+omarchy-theme-set-keyboard
+omarchy-theme-switcher
+omarchy-theme-bg-cache

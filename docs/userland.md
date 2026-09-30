@@ -211,23 +211,44 @@ autologin root) and `phone.sh ping` (phone-telnetd). Boot messages go to the fra
 | font | ttf-jetbrains-mono, plus a subset of JetBrainsMono Nerd Font and Noto Sans | the shell names both families. The subset (Nerd Font Regular/Bold, Noto Sans Light/Regular/Medium/Bold, ~10 MB) is extracted from the cached 232 MB + 107 MB packages into `/usr/share/fonts/omarchy-phone/`, not pacman-tracked |
 | phone shell | quickshell 0.3.1 (Qt 6), wtype, brightnessctl, upower, libnotify | see "Omarchy Phone shell and Phone app" |
 | phone app | gtk4, libadwaita, python-gobject (python 3) | `GSK_RENDERER=cairo` in the session. Icons: adwaita-icon-theme (Yaru isn't in ALARM) |
-| memory | zram-generator: `zram0` = min(RAM/2, 1 GiB), zstd | tmpfs pages can swap out to zram, so cold parts of the rootfs stay compressed |
+| memory | zram-generator: `zram0` = min(RAM\*3/4, 1.5 GiB), zstd; `vm.swappiness=150`, `vm.page-cluster=0` | tmpfs pages can swap out to zram, so cold parts of the rootfs stay compressed. zram is RAM-to-RAM, so swapping early (high swappiness, no readahead clustering) costs CPU, not disk time |
 | user | `omarchy` / `omarchy`, groups wheel seat video input audio render, sudo needs the account password (see "Security"), lingering | root password locked. Linger keeps `/run/user/1000` and the PipeWire user units alive after the SSH command that started Hyprland exits |
 | misc | `LANG=C.UTF-8` (built into glibc, no locale-gen), UTC in the image (set to the laptop's zone at deploy time, see "Commands for the phone session"), volatile journal (48 MB), fixed machine-id, `/usr/lib/clock-epoch` | firstboot and networkd-wait-online are masked |
 
 Removed to save space: man, doc, info and gtk-doc pages, translations, `/usr/include`, `*.a`,
 gir XML, `libteflon`, the default Hyprland wallpapers, Python's test suite, IDLE, Tk and `-O`
-bytecode, Qt's mkspecs/metatypes/cmake. That takes the 1.6 GB install down to 1099 MiB.
+bytecode, Qt's mkspecs/metatypes/cmake, plus (2026-09-29, RAM diet) the rest of the Qt 6 SDK
+(`qt6/bin`, moc/uic/rcc/qmlcachegen/qmlimportscanner/..., ~21 MB: nothing runs it, the shell
+loads QML at runtime) and the QPA plugins for backends this image never selects
+(`printsupport`, `sqldrivers`, `platformthemes`, `xcbglintegrations`, `egldeviceintegrations`,
+`generic`, `platforminputcontexts`, `networkinformation`, `tls`, every `plugins/platforms/*`
+but `libqwayland.so`, and `qmllint`/`qmlls`/`qmltooling`, ~21 MB total: `QT_QPA_PLATFORM=wayland`
+is hard-set in `hypr/hyprland.lua` and no QML here touches Qt Network, Sql or a printer), plus
+gettext's PO-authoring tools (`xgettext` alone is 14 MB; `gettext`/`ngettext`/`envsubst` stay),
+gtk4's and librsvg's build-time CLIs (`gtk4-encode-symbolic-svg`, `rsvg-convert`), sqlite's
+analysis/debug CLIs (keeping the `sqlite3` shell for on-device debugging), and libcap's
+`captree`. That takes the 1.6 GB install down to 1021 MiB (was 1099 MiB; see
+`tools/userland/build-rootfs.sh` `stage_strip`).
 The phone shell and app cost 311 MiB of it: Python 61 MiB, Qt 6 about 100 MiB (`/usr/lib/qt6` 50
 plus the libraries), GTK 4 + libadwaita about 25 MiB, icons 23 MiB, GStreamer (linked by GTK 4)
 13 MiB, fonts 8 MiB. binutils (51 MB, pulled in only by makepkg's dropins) and the gcc sanitizer runtimes are
 never installed. The biggest items left are
-libLLVM (161 MB), libgallium (52 MB) and ICU data (32 MB).
+libLLVM (161 MB), libgallium (52 MB) and ICU data (32 MB); all three are runtime dependencies of
+mesa/llvmpipe, Qt/ICU, and can't be trimmed without rebuilding those packages from source with a
+narrower target/locale list (LLVM in particular ships every backend target, not just aarch64 --
+a real further win, but a mesa/llvm rebuild is out of scope here). `usr/lib/gconv` (glibc's
+charset-conversion modules, ~20 MB for the full IBM/CJK/EBCDIC set) is a further ~15 MB
+candidate -- trimming it to UTF-*/ASCII/ISO-8859-*/CP125x is standard on embedded images, but
+nothing here proves what the Phone app's contact-import path might iconv(), so it needs a
+phone-side check before it's cut.
 
 RAM: with the plain image, Hyprland and two foot windows left 562 MB available (see "Hyprland on
-simpledrm"). The shell and app add 311 MiB of tmpfs, so expect roughly 250 MB available before
-QuickShell and the Phone app start. zram lets cold tmpfs pages compress, and a compressed
-read-only root (squashfs/erofs, see "Kernel asks") would give back most of the 1.1 GB.
+simpledrm"). The shell and app add a bit under 300 MiB of tmpfs, so expect roughly 260-300 MB
+available before QuickShell and the Phone app start (up from ~250 MB pre-diet). zram lets cold
+tmpfs pages compress -- now sized to 3/4 RAM (1.5 GiB cap) instead of 1/2, with swappiness raised
+to 150 so the kernel reaches for it before real pressure hits, since zram is compressed RAM, not
+disk. A compressed read-only root (squashfs/erofs, see "Kernel asks") would still give back most
+of the remaining ~1 GB; that needs a kernel config change, not a userland one.
 
 ## 16K pages
 
@@ -381,8 +402,14 @@ Known gaps and caveats:
 - `CONFIG_CGROUP_BPF=y`: systemd uses it for device ACLs and IP accounting in units. It warns
   and carries on without it.
 - `CONFIG_SQUASHFS` (xz/zstd) or `CONFIG_EROFS_FS`, plus `CONFIG_OVERLAY_FS`: the root could then
-  stay compressed in RAM (~150 MB instead of 788 MB) with a tmpfs upper layer. This is the
-  biggest possible memory win.
+  stay compressed in RAM with a tmpfs upper layer for writes, instead of the whole tree living
+  uncompressed in tmpfs. Checked 2026-09-29 against `build/fast-reload-usb/.config`: none of the
+  three are set. With the RAM-diet rootfs at 1021 MiB unpacked / 193 MiB as `rootfs.tar.xz`
+  (zstd inside EROFS or SQUASHFS should land close to that xz figure), that's still the single
+  biggest possible win -- roughly 800+ MiB of the 2 GiB back, versus the tens of MiB a userland
+  strip pass can find. It needs a kernel rebuild (`CONFIG_SQUASHFS_XZ`/`_ZSTD` or
+  `CONFIG_EROFS_FS` + `CONFIG_EROFS_FS_ZIP_ZSTD`, plus `CONFIG_OVERLAY_FS`), which is out of
+  scope for a userland-only change; not done here.
 - `CONFIG_SND` + the cs42l71 codec: only when audio work starts.
 
 ## Rebuild
@@ -407,11 +434,12 @@ verified, `SigLevel = Required`). Scriptlets run in a chroot through
 removed before packing. The tree is owned by subuids. Delete it with
 `unshare --user --map-auto --map-root-user rm -rf ~/Work/hoolock-iphone5s/build/userland/root`.
 
-`check-rootfs.sh` also lists unresolved `DT_NEEDED`. The 23 it reports are optional front ends
-whose libraries aren't installed (pinentry-gtk/qt, avahi-ui, mpg123 jack/sdl outputs, glycin-heif,
-ssh-sk-helper/libfido2, arpd, sensord, tiffgt, pylibmount, Qt's gtk3 platform theme and
-mysql/odbc/psql SQL drivers, appstream's `asc-mediaworker` (libvips)). None of the configured
-services use them. The smoke tests (systemd, Hyprland, foot, sshd, iwd, bluetoothd, bluetoothctl,
+`check-rootfs.sh` also lists unresolved `DT_NEEDED`. The 18 it reports (was 23; the RAM diet's
+`plugins/platformthemes` and `plugins/sqldrivers` removal took out the 5 that were Qt's own gtk3
+theme bridge and mysql/odbc/psql SQL drivers -- plugins that could never have loaded anyway) are
+optional front ends whose libraries aren't installed (pinentry-gtk/qt, avahi-ui, mpg123 jack/sdl
+outputs, glycin-heif, ssh-sk-helper/libfido2, arpd, sensord, tiffgt, pylibmount, appstream's
+`asc-mediaworker` (libvips)). None of the configured services use them. The smoke tests (systemd, Hyprland, foot, sshd, iwd, bluetoothd, bluetoothctl,
 pipewire, wireplumber, seatd, busybox, `sshd -t`, `qs`, upowerd, brightnessctl, PyGObject with
 GTK 4.22 + Adw 1.9, the Phone app modules, `phonectl`) all start under qemu. The check also
 parses both session configs with `Hyprland --verify-config` (phone shell and `PHONE_PLAIN=1`),
@@ -440,6 +468,7 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/test-switch-sim.sh` | laptop | PID 1 switch_root rehearsal with the ramdisk's own busybox |
 | `tools/userland/push-rootfs.sh` | laptop | push BT seed files, stream + unpack + verify, set the clock and timezone (`--go` to hand over and wait for ssh) |
 | `tools/userland/overlay/etc/modules-load.d/`, `modprobe.d/` | phone | driver load order and the gauge softdep |
+| `tools/userland/overlay/etc/sysctl.d/99-phone-zram.conf` | phone | swappiness/page-cluster tuning for zram (see "What's in it") |
 | `tools/userland/overlay/etc/systemd/system/omarchy-phone-bt-{keys,address}.service`, `overlay/usr/lib/phone-tk/bt-address` | phone | Bluetooth pairing restore and public address |
 | `tools/userland/overlay/etc/nftables.conf` | phone | default-deny inbound firewall (`lo` + `usb0` only, see "Security") |
 | `tools/userland/overlay/etc/systemd/system/sshd.service.d/10-phone.conf` | phone | orders sshd after `usb0`, matches `phone-telnetd.service`'s restart backoff (see "Security", F7) |

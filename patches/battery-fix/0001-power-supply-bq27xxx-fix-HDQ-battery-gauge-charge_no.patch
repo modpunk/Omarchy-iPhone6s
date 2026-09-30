@@ -1,0 +1,94 @@
+From ee086ccf7331f2a205419349abb4a18b2fa76027 Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 20:56:52 -0500
+Subject: [PATCH] power: supply: bq27xxx: fix HDQ battery gauge charge_now
+ timeout
+
+On the iPhone 6s bq27540, Nominal Available Capacity (register 0x0c/
+0x0d in the bq27541 command set this part otherwise shares) never
+answers: every read times out with -ETIMEDOUT. That register backs
+POWER_SUPPLY_PROP_CHARGE_NOW, so upower's ~200ms poll of charge_now
+filled the kernel log with "driver failed to report `charge_now'
+property: -110" and userspace never got a value.
+
+Substitute Remaining Capacity (0x10/0x11) for that one read. RC is an
+ordinary standard command in the same family, and it's already what
+the bq27xxx core itself falls back to for CHARGE_NOW on chips whose
+register map marks NAC unavailable, so the property keeps reporting
+without touching the shared core or its chip tables. Capacity,
+voltage_now, current_now, temp, status, health, charge_full(_design)
+and cycle_count all read different registers and are unaffected.
+
+Also rate-limit the transport's own bad-echo/no-response debug logs,
+which would otherwise flood dmesg just as fast under dyndbg.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Signed-off-by: modpunk <27315771+modpunk@users.noreply.github.com>
+---
+ .../power/supply/bq27xxx_battery_hdq_uart.c   | 27 ++++++++++++++++---
+ 1 file changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/power/supply/bq27xxx_battery_hdq_uart.c b/drivers/power/supply/bq27xxx_battery_hdq_uart.c
+index e150865b5f52..e67bc6b0d68a 100644
+--- a/drivers/power/supply/bq27xxx_battery_hdq_uart.c
++++ b/drivers/power/supply/bq27xxx_battery_hdq_uart.c
+@@ -185,12 +185,13 @@ static int bq27xxx_hdq_uart_read8_once(struct bq27xxx_hdq_uart *hu, u8 cmd)
+ 	len = bq27xxx_hdq_uart_wait(hu);
+ 
+ 	if (len < HDQ_CMD_BITS || memcmp(hu->rx_buf, tx, HDQ_CMD_BITS)) {
+-		dev_dbg(dev, "cmd %#04x: bad echo (%zu chars: %*ph)\n",
+-			cmd, len, (int)min_t(size_t, len, HDQ_CMD_BITS), hu->rx_buf);
++		dev_dbg_ratelimited(dev, "cmd %#04x: bad echo (%zu chars: %*ph)\n",
++				    cmd, len, (int)min_t(size_t, len, HDQ_CMD_BITS),
++				    hu->rx_buf);
+ 		return -EIO;
+ 	}
+ 	if (len < HDQ_CMD_BITS + HDQ_DATA_BITS) {
+-		dev_dbg(dev, "cmd %#04x: no response (%zu chars)\n", cmd, len);
++		dev_dbg_ratelimited(dev, "cmd %#04x: no response (%zu chars)\n", cmd, len);
+ 		return -ETIMEDOUT;
+ 	}
+ 
+@@ -250,12 +251,27 @@ static int __bq27xxx_hdq_uart_read(struct bq27xxx_hdq_uart *hu, u8 reg,
+ 	return (upper << 8) | lower;
+ }
+ 
++/*
++ * Nominal Available Capacity, 0x0c/0x0d in the bq27541 register map this
++ * part otherwise shares, never answers on this gauge's firmware: every read
++ * of it times out (-ETIMEDOUT). It is what backs
++ * POWER_SUPPLY_PROP_CHARGE_NOW. Substitute Remaining Capacity (0x10/0x11),
++ * the same register the core itself falls back to for CHARGE_NOW on chips
++ * that lack NAC (see bq27xxx_battery_get_property()) -- it is an ordinary
++ * standard command in the same family and does respond.
++ */
++#define BQ27540_HDQ_REG_NAC	0x0c
++#define BQ27540_HDQ_REG_RC	0x10
++
+ static int bq27xxx_hdq_uart_read(struct bq27xxx_device_info *di, u8 reg,
+ 				 bool single)
+ {
+ 	struct bq27xxx_hdq_uart *hu = container_of(di, struct bq27xxx_hdq_uart, di);
+ 	int ret;
+ 
++	if (reg == BQ27540_HDQ_REG_NAC)
++		reg = BQ27540_HDQ_REG_RC;
++
+ 	if (hu->line) {
+ 		ret = mux_state_select(hu->line);
+ 		if (ret)
+@@ -350,7 +366,10 @@ static void bq27xxx_hdq_uart_remove(struct serdev_device *serdev)
+ 	bq27xxx_battery_teardown(&hu->di);
+ }
+ 
+-/* The bq27540 uses the standard command set of the bq27541 family */
++/*
++ * The bq27540 uses the standard command set of the bq27541 family (see
++ * bq27xxx_hdq_uart_read() above for the one register it lacks).
++ */
+ static const struct bq27xxx_hdq_uart_chip bq27540_chip = {
+ 	.name = "bq27540",
+ 	.chip = BQ27541,
+-- 
+2.55.0
+
