@@ -33,6 +33,10 @@ testkit/overlays/<name>*.dtso     optional: DT overlay used for live testing
 - DT changes go in the patches (`arch/arm64/boot/dts/apple/...`). Use the fixed labels from
   `testkit/CONTEXT.md` (`serial1`..`serial6`, `spi1`..`spi3`) so series merge.
 - Overlays in `testkit/overlays/` are source (`.dtso`) only.
+- Any change under `patches/` is checked by CI (`.github/workflows/patch-series-ci.yml`,
+  [`docs/CI.md`](CI.md)): it `git am`s each series onto the pinned base commit in isolation and,
+  best-effort, builds the files it touches. It is build-only and never touches the phone. Add a
+  new series to the `SERIES=` array it describes, or the job fails with "unlisted series."
 
 ### `docs/drivers/<name>.md`
 
@@ -48,7 +52,9 @@ testkit/overlays/<name>*.dtso     optional: DT overlay used for live testing
 
 Read `testkit/TESTING-RULES.md` before touching the phone. The short form: one tethered phone
 on a RAM ramdisk, all access through `testkit/phone.sh`, no module unload (new module name per
-try), never write to the NAND.
+try), never write to the NAND; rule 13 lists the specific power-chip registers writes are
+approved for. After a fresh boot, run `testkit/selftest.sh` ([`docs/selftest.md`](selftest.md))
+to check every driver known to work in one pass before you start iterating on new ones.
 
 ## Never commit
 

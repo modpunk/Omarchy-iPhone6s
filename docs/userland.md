@@ -8,8 +8,9 @@ It's the base for Omarchy Phone (Arch Linux ARM + Hyprland).
 **Status:** builds and passes every laptop-side check, and the PID 1 hand-over passes a
 laptop rehearsal. It runs on the phone: on 2026-09-29 Hyprland 0.56.2 drew foot on the
 simpledrm panel with llvmpipe (see "Hyprland on simpledrm"). The phone shell and Phone app were
-added the same day and pass the laptop checks; they haven't run on the phone yet (see
-"Omarchy Phone shell and Phone app"). Also 2026-09-29: `SHELL_REV` bumped to the shell's
+added the same day and pass the laptop checks; they have since run on the phone too (see
+[the README's home-screen screenshot](../README.md), `docs/screenshots/iphone6s-omarchy-phone-home.png`,
+and "Omarchy Phone shell and Phone app" below). Also 2026-09-29: `SHELL_REV` bumped to the shell's
 lock-screen PIN, idle auto-lock and Bluetooth pairing agent hardening (branch `shell`,
 commits 33d7601/d84d3ad); the image now installs and enables all of it (see "Security" and
 "Lock screen PIN provisioning").

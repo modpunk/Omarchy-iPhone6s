@@ -2,8 +2,9 @@
 
 **Status**: reloads started from the busybox ramdisk work on the phone (about 10 s, USB NCM comes
 back). A reload started from the Arch userland (2026-09-29) booted the new kernel but USB never
-enumerated again; see "Reloading from the Arch userland" for the fix, which is not yet
-tested on the phone.
+enumerated again; the kernel + `kit` fix for that (see "Reloading from the Arch userland") has
+since merged to `main` ([#13](https://github.com/modpunk/Omarchy-iPhone6s/pull/13)), but it has
+not yet been re-tested with an actual kexec from inside the running userland on this phone.
 
 Without this, every new kernel costs a DFU cycle: buttons, checkm8, pongoOS, blob. With it:
 

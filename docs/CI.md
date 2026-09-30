@@ -29,6 +29,7 @@ and has no phone-specific step at all.
    ```
    "foundation:"
    "battery:foundation"
+   "battery-fix:foundation,battery"
    "bluetooth:foundation"
    "touch:"
    "fast-reload:"
@@ -71,6 +72,9 @@ the top of its `docs/drivers/<name>.md`. As of this writing:
   `serial3`..`serial6` DT nodes and PMIC/tty fixes other series build on.
 - `docs/drivers/battery.md` — "Depends on: the foundation series", needs the
   `serial5` node from `foundation/0001`.
+- `battery-fix` — depends on `foundation` and `battery` (the `charge_now` fix touches the same
+  HDQ transport driver `battery` adds). There is no `docs/drivers/battery-fix.md` yet; its
+  dependency note currently lives in `docs/drivers/battery.md`'s "Follow-up fix" section instead.
 - `docs/drivers/bluetooth.md` — "Depends on: the `foundation` series", needs
   the `serial1` node from `foundation/0001`.
 - `docs/drivers/touch.md` — standalone ("6 patches, `git am` onto

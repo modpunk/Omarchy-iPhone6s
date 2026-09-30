@@ -15,13 +15,19 @@ and it's an iPhone again.
 
 Current status (see the [README](../README.md#status) for the always-up-to-date version):
 
-| Works, verified on the phone | Doesn't (yet) |
-|---|---|
-| Framebuffer display (750x1334, simpledrm), Hyprland 0.56 + software rendering (llvmpipe), foot terminal | **Touch** — the SPI touch controller stays unpowered (the PMU LDO voltage code is unknown); the screen is display-only |
-| The **Omarchy Phone shell** (QuickShell) and the Phone app, driving everything from a keyboard | **Charging control** — the SN2400 charges on its own when the supply is strong enough (a self-powered hub), but Linux can't configure it (no public register map). See "Charging" below. |
-| Bluetooth (BCM4350): LE scan, and a BLE keyboard over `uhid` | **Wi-Fi and storage** — both sit behind the A9's PCIe block, which is shelved; no network but the USB link to the laptop, and the root filesystem lives in tmpfs |
-| Battery gauge (bq27540 over HDQ): percent, voltage, current, temperature, health | Audio, camera, modem, and anything behind the AOP coprocessor, NFC, Secure Enclave — out of scope |
-| All 5 buttons, backlight, PMIC RTC, watchdog, both CPU cores, 2 GB RAM, USB networking (`172.16.42.1` <-> `.2`) + a root USB telnet shell, fast kernel reload (kexec, no DFU) | |
+| Works, verified on the phone | In progress / doesn't work reliably | Not yet / out of scope |
+|---|---|---|
+| Framebuffer display (750x1334, simpledrm), Hyprland 0.56 + software rendering (llvmpipe, `glFinish()` shim removes the earlier input lag), foot terminal | **Touch** — the controller is powered and reports finger contacts, but X/Y decode and `BTN_TOUCH` aren't correct yet; the screen is still display-only, not usable for the GUI | **Wi-Fi, storage and the cellular modem** — all three sit behind the A9's PCIe block, which is shelved; no network but the USB link to the laptop, and the root filesystem lives in tmpfs |
+| The **Omarchy Phone shell** (QuickShell) and the Phone app, driving everything from a keyboard, with a per-device numeric lock-screen PIN | **Charging** — the SN2400 charges on its own when the supply is strong enough, but doesn't sustain reliably under Linux (suspected charger watchdog, unconfirmed) and Linux can't configure it at all (no public register map). See "Charging" below. | Audio, camera, sensors behind the AOP coprocessor, NFC, Secure Enclave — out of scope |
+| Bluetooth (BCM4350): pairing a BLE keyboard over `uhid` (adv-report-type quirk fix) | **Idle/display power-off** — `hypridle` blanks DPMS + the backlight on idle; merged, not yet re-verified on this phone | |
+| Battery gauge (bq27540 over HDQ): percent, voltage, current, temperature, health, `charge_now` (fixed to read Remaining Capacity) | | |
+| All 5 buttons, backlight, PMIC RTC, watchdog, both CPU cores, 2 GB RAM, USB networking (`172.16.42.1` <-> `.2`) + a root USB telnet shell, fast kernel reload (kexec, no DFU) | | |
+
+Tooling, not itself a phone-driver finding: a post-boot self-test harness
+(`testkit/selftest.sh`, see [`docs/selftest.md`](selftest.md)) drives the phone through
+`testkit/phone.sh` to check every driver above in one pass, and a patch-series CI
+([`docs/CI.md`](CI.md)) `git am`s + build-checks every series in `patches/` on every push
+(build-only, never touches the phone).
 
 A Bluetooth keyboard is the only practical way to interact with the phone directly, since there's
 no touch.
@@ -57,8 +63,9 @@ no touch.
 - A classic *or* BLE Bluetooth keyboard, for step 6.
 
 Read `testkit/TESTING-RULES.md` before you improvise anything beyond these steps — the phone is
-one physical device, and rule 8 in particular: if it stops answering for 60 seconds, stop and
-recover through DFU rather than retrying in a loop.
+one physical device (13 rules as of this writing, including rule 13's approved power-chip write
+list), and rule 8 in particular: if it stops answering for 60 seconds, stop and recover through
+DFU rather than retrying in a loop.
 
 ## 1. Build a kernel with the phone's drivers
 
@@ -66,21 +73,30 @@ The RAM userland *requires* this — `tools/userland/build-rootfs.sh` refuses to
 kernel tree that already has the out-of-tree driver modules (`gpio-apple-pmic`, `mux-sn2400`,
 `bq27xxx_battery_hdq_uart`) built and matching the running release. There's no plain-mainline
 shortcut; you need the same combined kernel this repo tests against: `foundation`, `battery`,
-`bluetooth` (through patch 0007, the LE-advertising fix that makes BLE keyboards pair) and
-`fast-reload`, all applied to one `$HOOLOCK/linux` tree.
+`battery-fix` (the `charge_now` fix, on top of `battery`), `bluetooth` (through patch 0007, the
+LE-advertising fix that makes BLE keyboards pair) and `fast-reload`, all applied to one
+`$HOOLOCK/linux` tree.
 
 Get the patches following `docs/CONTRIBUTING.md`'s recipe (`git am` onto commit `6831bc701`), in
-dependency order — `battery` and `bluetooth` both depend on `foundation`; where `fast-reload` and
-the others land relative to each other isn't documented, but all four touch different files apart
-from the shared `s800x-6s` device-tree source, which is where a conflict would show up:
+dependency order — `battery` and `bluetooth` both depend on `foundation`, and `battery-fix`
+depends on `battery`:
 
 ```sh
 cd $HOOLOCK/linux && git checkout 6831bc701
 git am /path/to/omarchy-iphone6s/patches/foundation/*.patch
 git am /path/to/omarchy-iphone6s/patches/battery/*.patch
+git am /path/to/omarchy-iphone6s/patches/battery-fix/*.patch
 git am /path/to/omarchy-iphone6s/patches/bluetooth/*.patch
 git am /path/to/omarchy-iphone6s/patches/fast-reload/*.patch
 ```
+
+**Known gap:** `docs/CI.md` says `battery` and `bluetooth` both patch the shared `s800x-6s`
+device-tree source and conflict with each other when CI applies each series in isolation on top
+of `foundation` alone — but the userland image needs modules from both series, which is what the
+recipe above stacks into one tree. Whether that stacking actually hits the same conflict CI
+reports (or the two series only conflict when applied standalone, not on top of each other) isn't
+verified in either doc; if `git am` fails here, that's the open question to resolve, not
+necessarily a mistake in your command.
 
 (If `$HOOLOCK/linux` is the same tree you use for live driver testing elsewhere, do this in a
 worktree branch instead — `testkit/TESTING-RULES.md` rules 1–2 keep that tree read-only. This
@@ -166,6 +182,9 @@ telnet 172.16.42.1        # root shell, no auth (busybox telnetd) — fine only 
 # or: kit/boot.sh shell   # USB serial (autologin root)
 ```
 
+Optionally, `testkit/selftest.sh` prints a PASS/FAIL table of every driver known to work on this
+boot ([`docs/selftest.md`](selftest.md)) — a good sanity check before moving on.
+
 ## 4. Push the userland and hand over
 
 ```sh
@@ -231,21 +250,23 @@ shell is what you drive from the Bluetooth keyboard in the next step — the on-
 (home, shade, switcher, lock) all take keyboard input, not just touch, since the touchscreen
 doesn't work here.
 
-### Don't lock the screen
+### The lock screen PIN
 
-The lock screen's PIN pad checks the **user's login password** through PAM, and the default
-password (`omarchy`) is not numeric — so once locked, there is currently no PIN you can type on
-the pad to unlock it. **Don't lock the phone** until you've either set a numeric password for the
-`omarchy` user or built the image with one (`USERPASS=` at build time). The easiest ways to
-trigger it by accident from a keyboard are `SUPER+L` (lock) and `SUPER+Esc` (the power key — a tap
-locks and blanks the screen; a long press opens the power menu, which also has a Lock item), plus
-whatever your keyboard's own power/lock media key sends. Avoid all of them until the numeric PIN
-lands.
+The lock screen's PIN is now its own secret (`ophone-pin`, PAM'd through `/etc/pam.d/ophone-lock`),
+independent of the `omarchy` account/SSH/sudo password — see
+[`docs/userland.md`](userland.md#lock-screen-pin-provisioning) for the full mechanism. A freshly
+built image has **no PIN configured** and boots (and restarts) unlocked; once you provision one
+(`push-rootfs.sh`'s `PHONE_PIN_FILE`/`PROMPT_PIN`, or `ssh omarchy@172.16.42.1 sudo ophone-pin
+set` any time after boot) the shell boots and restarts locked from then on, including a plain
+`systemctl --user restart omarchy-phone-session`. The easiest ways to trigger a lock by accident
+from a keyboard are `SUPER+L` and `SUPER+Esc` (the power key — a tap locks and blanks the screen;
+a long press opens the power menu, which also has a Lock item).
 
-If you do get locked out, it's recoverable over SSH, which the lock screen doesn't block:
+If you do get locked out (or forget the PIN), it's recoverable over SSH, which the lock screen
+doesn't block — root can set a new PIN without knowing the old one:
 
 ```sh
-ssh omarchy@172.16.42.1 systemctl --user restart omarchy-phone-session   # the shell starts unlocked
+ssh omarchy@172.16.42.1 sudo ophone-pin set
 ```
 
 ## 6. A Bluetooth keyboard, since there's no touch
@@ -291,32 +312,37 @@ A reload is a reboot as far as the phone's running state goes: you land back in 
 the userland gone, so redo steps 4 onward afterwards (`push-rootfs.sh --go`).
 
 **Do this only while the phone is still in the ramdisk stage, before `push-rootfs.sh --go`.** A
-reload started from inside the Arch userland currently loses the USB connection (no
-re-enumeration) and needs a full DFU recovery to get back — a fix for this is in review
-([#13](https://github.com/modpunk/Omarchy-iPhone6s/pull/13)) and was verified on the phone (five
-reloads, including from the running userland, all kept USB), but until it merges to `main`, treat a reload
-from inside the userland session as a DFU trip waiting to happen. See
-[`docs/fast-reload.md`](fast-reload.md) for the full mechanism and its other failure modes.
+reload started from inside the Arch userland previously lost the USB connection (no
+re-enumeration) and needed a full DFU recovery to get back; the kernel + `kit` fix for this has
+since merged to `main` ([#13](https://github.com/modpunk/Omarchy-iPhone6s/pull/13)), but per
+[`docs/fast-reload.md`](fast-reload.md#reloading-from-the-arch-userland) it has not yet been
+re-verified with an actual kexec from inside the running userland on this phone — treat a reload
+from inside the userland session as a DFU trip waiting to happen until that's confirmed. See
+`docs/fast-reload.md` for the full mechanism and its other failure modes.
 
 ## Charging
 
-The SN2400 charger charges the battery **by itself** whenever the USB supply can deliver enough
-current; Linux doesn't need to program it (and can't: it's an undocumented Apple/TI part with no
-public register map, so charge limits and source detection aren't configurable yet). What decides
-whether the phone gains or loses charge is therefore the **supply**:
+Charging does **not** work reliably under Linux. The SN2400 charger is an undocumented Apple/TI
+part with no public register map, so Linux can't program it — charge limits and source detection
+aren't configurable, and charging (when it happens at all) is entirely autonomous in the charger
+itself:
 
-- On a **USB hub with its own power supply**, the gauge reports `status=Charging` at roughly
-  +300 mA (measured on the idle ramdisk; less under Hyprland), about 4-5 hours from 10 % to full.
+- On a **USB hub with its own power supply**, the gauge has been seen reporting
+  `status=Charging` at roughly +300 mA (measured on the idle ramdisk; less under Hyprland), but
+  this hasn't been shown to sustain to a full charge — a suspected SN2400 charge watchdog may cut
+  it off (unconfirmed hypothesis, not a proven root cause). Don't rely on a session to charge the
+  phone; check `cat /sys/class/power_supply/bq27540-0/capacity` and don't assume it's climbing.
 - On an **unpowered hub or laptop port**, the cable only covers the phone's own load (net about
-  -75 to -85 mA at idle, roughly 15 hours per charge), so the battery slowly drains.
+  -75 to -85 mA at idle, roughly 15 hours per charge), so the battery drains.
 - Heavy work (unpacking the rootfs, full-speed rendering) can draw far more than the supply
-  provides, so check `cat /sys/class/power_supply/bq27540-0/capacity` before long sessions.
+  provides even in the charging case above.
+- **Charge the phone in iOS between Linux sessions** rather than relying on charging under Linux.
 
 ## Troubleshooting
 
 | Symptom | Likely cause / fix |
 |---|---|
-| Phone drains, or doesn't gain charge, while tethered | Bus-powered hub port; Linux doesn't drive the charger either way. Use a hub with its own power supply. |
+| Phone drains, or doesn't gain charge, while tethered | Bus-powered hub port; Linux doesn't drive the charger either way. A hub with its own power supply is more likely to gain charge, but charging doesn't reliably sustain under Linux even then (see "Charging") — charge in iOS between sessions if the battery is low. |
 | A hub port stops passing data after a bad reload | Try a different port on the hub before troubleshooting the phone. |
 | Stuck in recovery mode instead of DFU | Let `palera1n` drive it back to DFU rather than redoing the button sequence by hand. |
 | `kit/boot.sh linux` prints `LIBUSB_ERROR_IO` at the end | Normal — the phone re-enumerating as its Linux USB gadget, not a failure. |
@@ -325,7 +351,7 @@ whether the phone gains or loses charge is therefore the **supply**:
 | SSH says the host key for `172.16.42.1` changed | Old entry from a previous build: `ssh-keygen -R 172.16.42.1`. |
 | `push-rootfs.sh` reports the unpack failed / md5 mismatch | Rerun it; if it repeats, recover through DFU rather than retrying on a half-switched root. |
 | Phone doesn't answer for 60+ seconds at any point | Per `testkit/TESTING-RULES.md` rule 8: stop, don't retry in a loop — it has likely panicked or hung. Recover through DFU: `kit/boot.sh pongo && kit/boot.sh linux`. |
-| Locked yourself out of the lock screen | See "Don't lock the screen" above — recover over SSH: `systemctl --user restart omarchy-phone-session`. |
+| Locked yourself out of the lock screen / forgot the PIN | See "The lock screen PIN" above — recover over SSH: `ssh omarchy@172.16.42.1 sudo ophone-pin set`. |
 | Bluetooth keyboard doesn't do anything | It must be paired *from the phone*, not the laptop; confirm with `bluetoothctl` over SSH/telnet on the phone. |
 | Keyboard pairing didn't survive a reload/reboot | Expected — the root is RAM-only. Seed it back with `BT_KEYS_TGZ`/`BT_ADDR_FILE` on the next `push-rootfs.sh` (see step 6). |
 | Clock is wrong inside the userland | `push-rootfs.sh` sets the kernel clock automatically on every push; it doesn't persist to the PMIC. Run `sudo hwclock -w --utc` once you're in SSH. |
