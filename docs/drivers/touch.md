@@ -1,10 +1,13 @@
 # Touch (iPhone 6s N71 multitouch on spi2)
 
-**Status:** partial. The SPI driver runs on the phone (48 MHz reference), reset toggles and the
-touch analog supply is on, but the controller does not answer. The next suspect is the 32 kHz
-touch clock (see "Power and clock"). No touch events have been seen.
+**Status:** partial. With the 32 kHz touch clock and the analog supply on, the controller
+answers in HBPP (2026-09-29): `1f01`, then `4879`, and the bootloader version at 0x10008ffc
+is 0x434d15c1. The first driver run then failed on the calibration packet (status 0x4f81, a
+framing bug, see "Calibration packet rejected"). Fixed on `6s/touch-next`, not yet run live.
+No touch events have been seen.
 
-Patches: `patches/touch/` (6 patches, `git am` onto `6831bc701` on their own, checked).
+Patches: `patches/touch/` (the first 6 commits of `6s/touch-next`; the power, clock and
+bootloader fixes after them are only on the branch) (6 patches, `git am` onto `6831bc701` on their own, checked).
 
 ## What
 
@@ -118,6 +121,41 @@ above, DT CS delays 5000/10000 ns. All new DT nodes stay disabled until the cloc
 The running kernel has `CONFIG_REGULATOR` off, so live tests switch rails with the approved
 one-bit writes and leave the supplies out of the DT.
 
+## Calibration packet rejected (0x4f81), 2026-09-29
+
+The driver (`apple_z2_n2`, bound to spi0.0) got through the HBPP check and then logged
+`blob of 1040 bytes: ack 0x4f81`, -EIO.
+
+**Cause: the calibration DATA packet had two stray bytes.** `struct apple_z2_hbpp_blob_hdr`
+(0x3001, len/4, 32-bit addr, 16-bit header sum) is 10 bytes on the wire, but it isn't
+`__packed`, so `sizeof()` is 12 and `apple_z2_build_cal_blob()` put `00 00` between the header sum
+and the payload: 12 + 1024 + 4 = 1040. Apple's constructed images use the 10-byte header (the
+extractor checks `2 + 10 + words*4 + 4 == len`), and so does the Asahi Z2FW generator
+(`pkt_len = 14 + len(payload)`). The bootloader took the pad as payload bytes 0-1 and read the last
+2 payload bytes plus the low half of the sum as the sum32: 0xe72c0000 against 0xe72c for this
+phone's blob. The touch bar never checks the status, so the bug is in the base tree too.
+
+0x4f81 itself: a status word in the same family as `4879` (idle), `4969`, `4ad1` (register ack),
+`4bc1` (data ack) and `4c39` (memory read reply, seen in the diag: `4c39 15c1 434d 0166`, value
+0x434d15c1, then the byte sum of the value). It is not an ack. Nothing public names it, so the
+driver only calls it "reject". The framing bug is enough to explain it.
+
+Also different from the diag run that worked, and now matched in the driver:
+- **SPI clock**: the driver ran the bootloader at the DT 8 MHz; the diag used 1 MHz. The driver
+  now uses `hbpp_speed_hz` (default 1000000) for every HBPP packet and the DT speed after
+  EXECUTE.
+- **CS setup/hold**: the booted (integration) DT and `touch-live.dtso` have no
+  `spi-cs-*-delay-ns`, and the SPI core only reads them when the device is created, so the driver
+  ran with 0/0. It now sets 5000/10000 ns when the DT gives none (probe prints the values).
+
+Other changes (kernel commits `9ffac47ae2ba`, `0bb693fe6158`): the calibration packet is built
+in wire order (1038 bytes; checked offline with the extractor's `check_packet`). Its payload is
+swapped per 16-bit word, because the bootloader stores each big-endian wire word
+little-endian: the images carry the ARM word e59ff018 as `f0 18 e5 9f`. `hbpp_cal_swap=0` turns
+the swap off; the sum is the same either way. Long packets go as one message of 4 KiB transfers
+with CS held. ATN is polled (50 x 1 ms) while the status is still idle. The memory read reply is
+checked. dyndbg traces every packet, status word and report.
+
 ## Live-test plan (main session runs every step)
 
 Modules for the running (integration) kernel: `~/Work/hoolock-iphone5s/build/touch-next-mods-integ/`
@@ -155,19 +193,62 @@ Writes (each needs its own OK; one at a time; read back):
    (`touch_clk_t1.ko restore=1 expect=<step-2 value>`) and try `reset_invert=1` once. If both
    fail, the next candidate (Corellium order) is a core power cycle with the analog rail on:
    0x319 bit0 off, wait, on again. That is a D2255 write outside rule 13 and needs a new OK.
-5. Only if step 4 passed: firmware and driver. Push `firmware/touch/apple/mtfw-n71.bin` (84092 B,
-   local, never committed) to `/lib/firmware/apple/`. The touchscreen@0 node needs the
-   compatible `apple,n71-multitouch`, `interrupts-extended` on GPIO 142 falling edge, and the
-   calibration blob (`tools/touch/adt-touch-cal.py` on the runtime ADT). The main session's
-   `touch-live.dtso` from 2026-09-29 already does most of this. Unbind the current driver,
-   `insmod apple_z2_n2.ko`, then bind `spi0.0` to `apple-z2-n2`. Expect
-   `bootloader version 0x...` and no ack errors. Optional: apply `touch-clk-v1.dtbo` and load
-   `clk_apple_touch_v1.ko` first, so the driver owns the clock (this writes the same register as
-   step 3).
-6. `evtest` on "iPhone 6s Touchscreen": should be silent with no finger.
+5. Only if step 4 passed: firmware and driver, steps 5a-6b below.
+
+Driver bring-up test (after step 4, clock and analog supply still on):
+
+5a. Preconditions (read-only): `/lib/firmware/apple/mtfw-n71.bin` is 84092 bytes;
+   `touch_clk_t1.ko` (no parameters) shows `enable 1 ... div 732`; Chestnut 0x05 = 0x1f;
+   `cat /sys/bus/spi/devices/spi0.0/of_node/compatible` starts with `apple,n71-multitouch`, and
+   `apple,z2-cal-blob` is 1024 bytes (`wc -c /sys/bus/spi/devices/spi0.0/of_node/apple,z2-cal-blob`,
+   from `touch-live.dtbo`). Use the `touch-next-mods-integ` set (the one loaded last time):
+   both sets print the same vermagic, so `uname -r` can't tell them apart.
+5b. Remove the old driver: `echo spi0.0 > /sys/bus/spi/drivers/apple-z2-n2/unbind` (if bound),
+   `rmmod apple_z2_n2`.
+5c. `insmod apple_z2_n2.ko dyndbg=+p` (from `build/touch-next-mods-integ/z2n2/`), then
+   `echo apple-z2-n2 > /sys/bus/spi/devices/spi0.0/driver_override;
+   echo spi0.0 > /sys/bus/spi/drivers_probe`. Probe is async and the upload takes about 1 s at
+   1 MHz, so read `dmesg` after 3 s.
+5d. Expected info lines, in order:
+   - `HBPP at 1000000 Hz (run 8000000 Hz), mode 3, CS setup 5000 hold 10000 ns`
+   - `HBPP bootloader: ...` (words from {1f01, 4879, ...})
+   - `calibration 1038 bytes to 0x10009000: acked`
+   - `blob of 65460 bytes: acked`, then `blob of 18600 bytes: acked`
+   - `bootloader version 0x434d15c1`
+   - `calibration request done, status 0x.... (...)`: record the value, it isn't checked
+   - `firmware started at 0x10003400`
+   Then `readlink /sys/bus/spi/devices/spi0.0/driver` ends in `apple-z2-n2`.
+   dyndbg lines to check: calibration tx head `30 01 01 00 90 00 10 00 00 a1 ...`; image 0 head
+   `18 e1 30 01 3f e9 00 00 00 00 01 28 f0 18 e5 9f`, tail `01 18 00 00 ea 35 00 57`; image 1
+   head `18 e1 30 01 12 26 19 00 00 40 00 91`, tail `60 1a 00 00 bd ff 00 19`; the three
+   REG_WRITEs (0x10003060, 0x1000305c, 0x10003058), 0x10003000 and 0x10003518 each with
+   `status 0x4ad1 (ACK_REG)`.
+5e. If it fails, save the whole dmesg and stop. Don't retry blindly. Which failure it is:
+   - calibration still `reject`: framing is now the same as Apple's images, so capture the tx
+     trace. The next candidates are a leading NOP (like the images) and `hbpp_speed_hz=500000`.
+   - `after 50 polls` with `idle`: the bootloader never finished the packet.
+   - image 0 `spi error` / `timeout`: the SPI controller, not the protocol.
+   - REG_WRITE not `ACK_REG`: the register write mask meaning (0xffffffff) is the suspect.
+   - `read ...: unexpected reply`: note it. Only the const-cal choice depends on the version.
+   - boot completes but reports are garbage: the report reads after EXECUTE run at the DT
+     8 MHz, and there is no runtime knob for it (an overlay can't change `spi-max-frequency`
+     on an existing device). Suspect this first; changing it needs a rebuild.
+   Clean up after a failure: `echo spi0.0 > .../apple-z2-n2/unbind` if bound,
+   `echo > /sys/bus/spi/devices/spi0.0/driver_override`, `rmmod apple_z2_n2`.
+6. No finger: find the node
+   (`grep -l "iPhone 6s Touchscreen" /sys/class/input/event*/device/name`), note the
+   `apple-z2-irq` count in `/proc/interrupts`, then run `evtest /dev/input/eventN` for 10 s.
+   Expected: no events. The IRQ count may rise a little; each read shows up as a dyndbg
+   `EB reply` or `report` line. Turn dyndbg off before long runs:
+   `echo 'module apple_z2_n2 -p' > /sys/kernel/debug/dynamic_debug/control`.
 
 Human finger test:
 
+6b. One finger held in the centre with evtest running: expect `BTN_TOUCH 1`,
+   `ABS_MT_TRACKING_ID`, `ABS_MT_POSITION_X/Y`, then release on lift. If the IRQ count rises
+   but there are no events, turn dyndbg back on and save the `report` lines. The report layout
+   is the unverified touch bar parser. If the IRQ count does not move, look at pad 142 / the
+   IRQ trigger.
 7. One finger in each corner (top-left, top-right, bottom-left, bottom-right), then the
    centre, then a slow drag along each edge, then two fingers. Record the raw
    ABS_MT_POSITION_X/Y at each corner, check BTN_TOUCH and slot release on lift.
@@ -195,6 +276,7 @@ Human finger test:
 | touch supplies as on/off switches (PMU 0x31f bit0, Chestnut 0x05 mask 0x10), power-on order, 32 kHz touch clock register layout at PMGR+0x78000 on A10 | Corellium `linux-sandcastle` (GPL): `hx-h9p-d10.dts`, `hx-pmu-i2c-pwrsw.c`, `hx-touch.c`, `clk-hx-pmgr.c` |
 | TCLK (8, 100, 0x8000), PMGR `clocks` entry 8 = "LPO" | runtime ADT, `/arm-io/spi2/multi-touch` and `/arm-io/pmgr` |
 | constructed firmware images, `PreconstructedBootloadPacketType=Z2`, version 0x0670.mihu | IPSW rootfs `/usr/share/firmware/multitouch/N71.mtprops` (checksums checked by the extractor) |
-| Z2FW container, touch bar packet layouts (0x3001 DATA, 0x1e33 RMW, 0x1f01), EB/E1 report read | Asahi `asahi_firmware/multitouch.py` and upstream `apple_z2.c` (public) |
+| Z2FW container, touch bar packet layouts (0x3001 DATA with a 10-byte header, 0x1e33 RMW, 0x1f01), EB/E1 report read | Asahi `asahi_firmware/multitouch.py` and upstream `apple_z2.c` (public) |
+| 0x4f81 reject on the padded calibration packet, memread reply `4c39 <value> <sum>` | live driver and touch_diag_d2 step 4 runs (2026-09-29) |
 
-No touch report has been seen yet; the only live SPI traffic so far is all zeros.
+No touch report has been seen yet. Live HBPP traffic so far: the diag check and memory read, and the driver's rejected calibration packet.
