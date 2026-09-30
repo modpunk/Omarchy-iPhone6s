@@ -15,7 +15,10 @@
 #      PHONE_SRC (omarchy-phone git repo; default ~/Work/omarchy-phone),
 #      SHELL_REV / APP_REV (commits of its shell/ and apps/phone/ to install),
 #      KBUILD (kernel build tree with the out-of-tree phone drivers; default
-#      ~/Work/hoolock-iphone5s/build/integration), KREL (its kernel release).
+#      ~/Work/hoolock-iphone5s/build/integration), KREL (its kernel release),
+#      ENABLE_TELNETD (default 1: enable phone-telnetd, root telnet on the USB
+#      link with no auth, so testkit/phone.sh keeps working after
+#      switch_root -- set 0 for anything beyond bench dev, see docs/userland.md).
 # Artifacts stay out of git: they carry Broadcom firmware and your SSH keys.
 # The root dir is owned by subuids; delete it with
 #   unshare --user --map-auto --map-root-user rm -rf "$OUT/root"
@@ -32,6 +35,17 @@ PHONE_SRC="${PHONE_SRC:-$HOME/Work/omarchy-phone}"
 # Pinned so a rebuild installs the same shell/app; bump when deploying newer ones.
 SHELL_REV="${SHELL_REV:-67eabf4c0e2a9273d98851d43e6af88d78492732}"   # branch shell
 APP_REV="${APP_REV:-127478931f2f683f10830310948da31fab96b254}"       # branch phone-app
+# archlinuxarm-keyring is the trust root for every later package signature
+# (SigLevel = Required in pacman-alarm.conf), but it's TOFU: fetched from a
+# plaintext-HTTP mirror with no signature to check yet (F11, security-review.md;
+# ALARM's mirror network has no working per-mirror HTTPS -- verified, geo
+# mirrors either refuse the connection or serve a cert for a different name,
+# so pinning the content is the control, not the transport). Update this pin
+# (and KEYRING_SIG_FPR, best-effort informational) after checking a new
+# archlinuxarm-keyring release out-of-band, e.g. against the ALARM wiki or a
+# second independent mirror, before bumping.
+KEYRING_SHA256="${KEYRING_SHA256:-3cb36869edfe413672a6e932cc55d7f8386e1a9d3b38663cfb3bc6fe0d146e21}"  # archlinuxarm-keyring-20240419-2-any.pkg.tar.xz
+KEYRING_SIG_FPR="${KEYRING_SIG_FPR:-68B3537F39A313B3E574D06777193F152BDBE6A6}"  # ALARM Build System signing key
 # Fonts the shell names (Theme.qml). The packages are 232 + 107 MB; only these
 # faces are extracted from the cached packages (not pacman-tracked).
 FONT_PKGS="ttf-jetbrains-mono-nerd noto-fonts"
@@ -113,12 +127,18 @@ in_root() { chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin HOME=/root LANG=C.UTF-8
 stage_install() {
 	if [ ! -s "$OUT/gnupg/pubring.kbx" ] && [ ! -s "$OUT/gnupg/pubring.gpg" ]; then
 		log "keyring (archlinuxarm-keyring into $OUT/gnupg)"
-		local kr url
+		local kr url got
 		mkdir -p "$OUT/cache" "$OUT/dbroot/var/lib/pacman" "$OUT/keyring"
 		pacman --root "$OUT/dbroot" --config "$CONF" -Sy >/dev/null
 		url="$(pacman --root "$OUT/dbroot" --config "$CONF" -Sp archlinuxarm-keyring | tail -1)"
 		kr="$OUT/cache/$(basename "$url")"
 		[ -s "$kr" ] || curl -sfL -o "$kr" "$url"
+		# F11: this package becomes the trust root for every later pacman
+		# signature check, so verify it against the pin above before it's
+		# extracted and populated -- don't trust the plaintext-HTTP mirror.
+		got="$(sha256sum "$kr" | cut -d' ' -f1)"
+		[ "$got" = "$KEYRING_SHA256" ] || die "archlinuxarm-keyring ($kr) sha256 $got != pinned $KEYRING_SHA256 -- refusing to use it as a trust root. If this is a legitimate upstream update, verify the new package out-of-band and bump KEYRING_SHA256/KEYRING_SIG_FPR in build-rootfs.sh"
+		log "keyring checksum verified against pin ($KEYRING_SHA256)"
 		bsdtar -xf "$kr" -C "$OUT/keyring" usr/share/pacman/keyrings
 		pacman-key --gpgdir "$OUT/gnupg" --init >/dev/null 2>&1
 		pacman-key --gpgdir "$OUT/gnupg" --populate-from "$OUT/keyring/usr/share/pacman/keyrings" \
@@ -170,7 +190,10 @@ stage_config() {
 		useradd -R "$ROOT" -m -U -G wheel,seat,video,input,audio,render -s /bin/bash "$USERNAME"
 	fi
 	# -e (pre-hashed) keeps chpasswd away from the host's PAM stack.
-	printf '%s:%s\n' "$USERNAME" "$(openssl passwd -6 "$USERPASS")" | chpasswd -e -R "$ROOT"
+	# USERPASS goes to openssl over stdin, not argv (F15, security-review.md):
+	# a process argv is visible to any other local user on the build host via
+	# ps for the life of the call; stdin isn't.
+	printf '%s:%s\n' "$USERNAME" "$(printf '%s' "$USERPASS" | openssl passwd -6 -stdin)" | chpasswd -e -R "$ROOT"
 	local uid gid
 	uid="$(awk -F: -v u="$USERNAME" '$1==u {print $3}' "$ROOT/etc/passwd")"
 	gid="$(awk -F: -v u="$USERNAME" '$1==u {print $4}' "$ROOT/etc/passwd")"
@@ -207,8 +230,16 @@ stage_config() {
 
 	log "units"
 	systemctl --root="$ROOT" enable systemd-networkd.service sshd.service bluetooth.service \
-		seatd.service iwd.service phone-telnetd.service getty@tty1.service \
+		seatd.service iwd.service getty@tty1.service nftables.service \
 		serial-getty@ttyGS0.service omarchy-phone-bt-keys.service omarchy-phone-bt-address.service
+	# Root telnet on the USB link (F19/Authentication, security-review.md):
+	# opt-in, defaulting on because testkit/phone.sh (phone.py) still talks to
+	# it after switch_root. Off: ENABLE_TELNETD=0 tools/userland/build-rootfs.sh
+	if [ "${ENABLE_TELNETD:-1}" = 1 ]; then
+		systemctl --root="$ROOT" enable phone-telnetd.service
+	else
+		systemctl --root="$ROOT" disable phone-telnetd.service 2>/dev/null || true
+	fi
 	systemctl --root="$ROOT" mask systemd-networkd-wait-online.service systemd-firstboot.service
 	systemctl --root="$ROOT" --global enable pipewire.socket pipewire-pulse.socket wireplumber.service
 	# The phone session starts at boot for $USERNAME only (not --global: root's

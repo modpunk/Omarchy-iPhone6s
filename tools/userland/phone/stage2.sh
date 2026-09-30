@@ -3,12 +3,17 @@
 # (busybox). Pushed to /tmp/6s/stage2.sh by tools/userland/push-rootfs.sh.
 #
 #   stage2.sh prep            mount the tmpfs at /newroot (SIZE=1400m)
-#   stage2.sh recv <port>     nc -l <port> | unxz | tar -x into /newroot (streamed,
-#                             the compressed tarball never sits in RAM)
+#   stage2.sh recv <port>     nc -l <port> (bound to 172.16.42.1, the USB address;
+#                             see F8, security-review.md) | unxz | tar -x into
+#                             /newroot (streamed, the compressed tarball never
+#                             sits in RAM)
 #   stage2.sh unpack <file>   same from a pushed file (deleted after unpacking)
 #   stage2.sh status          progress / result of recv or unpack, RAM use
 #   stage2.sh seed            move deploy-time files pushed to /tmp/6s (bt-address,
 #                             bt-keys.tgz) into /newroot/etc/omarchy-phone (root, 0600)
+#   stage2.sh timezone <zone> /newroot/etc/localtime -> /usr/share/zoneinfo/<zone>,
+#                             and /newroot/etc/timezone (the phone has no RTC/NTP yet;
+#                             push-rootfs.sh calls this with the laptop's zone)
 #   stage2.sh go              hand over: switch_root into /newroot (needs the
 #                             patched initramfs-userland.gz; PID 1 does the switch)
 #   stage2.sh nsboot          EXPERIMENTAL, no reboot needed: boot systemd as PID 1
@@ -63,9 +68,29 @@ carry() {
 		cp -a /lib/firmware/. "$NEWROOT/usr/lib/firmware/" 2>/dev/null
 	fi
 	mkdir -p "$NEWROOT/var/lib/6s-testkit"
+	# Exclude bt-address/bt-keys.tgz (F17, security-review.md): if seed hasn't
+	# run yet (e.g. a script failure between push and seed), these are more
+	# sensitive than the rootfs tarball and must not end up world-readable
+	# under /var/lib/6s-testkit as a side effect of carrying over test files.
 	find "$S" -maxdepth 1 -type f -size -8192k ! -name 'unpack.*' ! -name '*.tar.*' \
+		! -name 'bt-address' ! -name 'bt-keys.tgz' \
 		-exec cp -a {} "$NEWROOT/var/lib/6s-testkit/" \;
 	cp /HL_init.log "$NEWROOT/var/lib/6s-testkit/" 2>/dev/null
+}
+
+# Set the new root's timezone from the zone name push-rootfs.sh read off the
+# laptop. Symlink, like a normal Arch install; also drop a plain-text
+# /etc/timezone since some tools still look for it.
+timezone() {
+	[ -d "$NEWROOT/etc" ] || { echo "no userland in $NEWROOT"; exit 1; }
+	zone="$1"
+	[ -e "$NEWROOT/usr/share/zoneinfo/$zone" ] || {
+		echo "timezone: no $NEWROOT/usr/share/zoneinfo/$zone (bad zone, or tzdata missing from the image)" >&2
+		exit 1
+	}
+	ln -sf "/usr/share/zoneinfo/$zone" "$NEWROOT/etc/localtime"
+	echo "$zone" > "$NEWROOT/etc/timezone"
+	echo "timezone: set $zone"
 }
 
 # Per-phone files that must not be baked into the image. Moved, not copied, so
@@ -85,12 +110,15 @@ case "${1:-}" in
 prep) prep; df -m "$NEWROOT" | tail -1; free -m | head -2 ;;
 recv)
 	[ -n "${2:-}" ] || { echo "usage: stage2.sh recv <port>"; exit 1; }
-	prep; unpack_from "nc -l -p $2" ;;
+	prep; unpack_from "nc -l -p $2 -s 172.16.42.1" ;;
 unpack)
 	[ -f "${2:-}" ] || { echo "usage: stage2.sh unpack <file.tar.xz>"; exit 1; }
 	prep; unpack_from "cat '$2'"; rm -f "$2" ;;
 status) status ;;
 seed) seed ;;
+timezone)
+	[ -n "${2:-}" ] || { echo "usage: stage2.sh timezone <zone>"; exit 1; }
+	timezone "$2" ;;
 go)
 	check_root
 	grep -q userland-go /init || { echo "this ramdisk's /init is not patched: boot initramfs-userland.gz (see docs/userland.md) or try 'stage2.sh nsboot'"; exit 1; }
@@ -109,5 +137,5 @@ nsboot)
 	setsid unshare -m -p -f sh -c "mount --make-rprivate / && cd '$NEWROOT' && mount --move . / && exec chroot . /usr/lib/systemd/systemd" \
 		</dev/console >/dev/console 2>&1 &
 	sleep 3; ps | grep -c '[s]ystemd' ;;
-*) sed -n '2,16p' "$0"; exit 1 ;;
+*) sed -n '2,20p' "$0"; exit 1 ;;
 esac

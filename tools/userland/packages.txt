@@ -17,6 +17,7 @@ foot                 # CPU-rendered Wayland terminal, cheap on llvmpipe
 grim                 # screenshots over SSH (proof the compositor draws)
 ttf-jetbrains-mono
 zram-generator       # compressed swap in RAM (CONFIG_ZRAM=y)
+nftables             # default-deny firewall (F9): usb0 + lo only, enabled by default
 busybox              # nc/telnetd for testkit/phone.sh after switch_root
 sudo
 evtest
