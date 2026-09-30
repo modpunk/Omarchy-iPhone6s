@@ -55,6 +55,10 @@ and the first successful boot in [`docs/first-boot-2026-09-28.log`](docs/first-b
 
 ## Quick start
 
+New to this project? [`docs/getting-started.md`](docs/getting-started.md) walks through the
+whole path end to end, with the DFU button sequence, a troubleshooting table, and the practical
+gotchas (charging, keyboard pairing, the lock screen) that aren't obvious from the commands alone.
+
 You need a Linux host, an iPhone 6s, a Lightning cable, and the pieces from the
 [HoolockLinux setup docs](https://github.com/HoolockLinux/docs): their `linux` kernel tree,
 m1n1, the test initramfs, and palera1n + pongoOS + pongoterm. `kit/boot.sh` expects them under
