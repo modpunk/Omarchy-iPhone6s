@@ -33,7 +33,7 @@ FW_DIR="${FW_DIR:-$HOME/Work/hoolock-iphone5s/firmware/brcm}"
 STAGES="${STAGES:-install config strip check pack}"
 PHONE_SRC="${PHONE_SRC:-$HOME/Work/omarchy-phone}"
 # Pinned so a rebuild installs the same shell/app; bump when deploying newer ones.
-SHELL_REV="${SHELL_REV:-67eabf4c0e2a9273d98851d43e6af88d78492732}"   # branch shell
+SHELL_REV="${SHELL_REV:-d84d3ad34803010ceceb4bc0b6b90aeff80a7349}"   # branch shell: PIN/idle-lock/BT agent
 APP_REV="${APP_REV:-127478931f2f683f10830310948da31fab96b254}"       # branch phone-app
 # archlinuxarm-keyring is the trust root for every later package signature
 # (SigLevel = Required in pacman-alarm.conf), but it's TOFU: fetched from a
@@ -250,6 +250,12 @@ stage_config() {
 	ln -sfn /etc/systemd/user/omarchy-phone-session.service \
 		"$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants/omarchy-phone-session.service"
 	chown -h "$uid:$gid" "$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants/omarchy-phone-session.service"
+	# ophone-btagentd (F5/F6, shell/system/README.md): "systemctl --user enable"
+	# equivalent, done by hand the same way omarchy-phone-session is above --
+	# there's no running user manager in this build namespace to enable it with.
+	ln -sfn /usr/lib/systemd/user/ophone-btagentd.service \
+		"$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants/ophone-btagentd.service"
+	chown -h "$uid:$gid" "$ROOT/home/$USERNAME/.config/systemd/user/default.target.wants/ophone-btagentd.service"
 	# Filled at deploy time (push-rootfs.sh -> stage2.sh seed): bt-address, bt-keys.tgz.
 	install -d -m 700 -o 0 -g 0 "$ROOT/etc/omarchy-phone"
 	{ printf 'omarchy-phone userland %s (built on %s)\n' "$(date -u +%Y%m%dT%H%MZ)" "$(uname -n)"
@@ -267,12 +273,27 @@ stage_config_phone() {
 		--exclude=apps/phone/tests --exclude=apps/phone/scripts --exclude=apps/phone/.gitignore
 	cp "$OUT/ophone-revs" "$d/REVISIONS"
 	# Launchers resolve their tree with readlink -f, so symlinks work.
-	for f in ophone-ctl ophone-sys; do ln -sf "/usr/share/omarchy-phone/shell/bin/$f" "$ROOT/usr/local/bin/$f"; done
+	for f in ophone-ctl ophone-sys ophone-pin; do ln -sf "/usr/share/omarchy-phone/shell/bin/$f" "$ROOT/usr/local/bin/$f"; done
 	for f in omarchy-phone phoned phonectl; do ln -sf "/usr/share/omarchy-phone/apps/phone/bin/$f" "$ROOT/usr/local/bin/$f"; done
 	install -D -m 644 "$d/apps/phone/data/org.omarchy.Phone.desktop" "$ROOT/usr/share/applications/org.omarchy.Phone.desktop"
 	# System files the shell needs from the image (shell/system/README.md).
 	install -D -m 644 "$d/shell/system/logind-ophone.conf" "$ROOT/etc/systemd/logind.conf.d/omarchy-phone.conf"
 	install -D -m 644 "$d/shell/system/pam/ophone-lock" "$ROOT/etc/pam.d/ophone-lock"
+	# /run/omarchy-phone/faillock (pam_faillock's tally dir) and /etc/omarchy-phone
+	# (pin-hash) must exist before the first lock-screen unlock attempt or
+	# pam_faillock silently fails open (see shell/system/README.md, DESIGN.md
+	# "Throttling: pam_faillock"). /usr/lib/tmpfiles.d is scanned by
+	# systemd-tmpfiles-setup.service, part of sysinit.target's default
+	# dependencies (no explicit enable needed, and it completes long before
+	# any user session starts), so dropping the file there is enough.
+	install -D -m 644 "$d/shell/system/tmpfiles.d/omarchy-phone.conf" "$ROOT/usr/lib/tmpfiles.d/omarchy-phone.conf"
+	# bluetoothd defaults: not discoverable/pairable at rest, no Just-Works
+	# re-pairing, resolvable LE address (F5, security-review.md).
+	install -D -m 644 "$d/shell/system/bluetooth/main.conf" "$ROOT/etc/bluetooth/main.conf"
+	# Real BlueZ pairing agent (on-screen Pair/Reject), replacing bluetoothd's
+	# auto-accept fallback agent (F5/F6). Enabled for $USERNAME below, once its
+	# uid/gid are known ("units").
+	install -D -m 644 "$d/shell/system/systemd/ophone-btagentd.service" "$ROOT/usr/lib/systemd/user/ophone-btagentd.service"
 	chown -R 0:0 "$d"
 	in_root python3 -m compileall -q /usr/share/omarchy-phone/apps/phone/omarchy_phone >/dev/null \
 		|| die "python3 compileall of the Phone app failed"

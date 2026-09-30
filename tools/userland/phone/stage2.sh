@@ -11,6 +11,11 @@
 #   stage2.sh status          progress / result of recv or unpack, RAM use
 #   stage2.sh seed            move deploy-time files pushed to /tmp/6s (bt-address,
 #                             bt-keys.tgz) into /newroot/etc/omarchy-phone (root, 0600)
+#   stage2.sh pin             provision the lock-screen PIN: run "ophone-pin set" inside
+#                             /newroot (chroot, /proc and /dev bind-mounted for the
+#                             duration) from /tmp/6s/phone-pin, pushed by push-rootfs.sh;
+#                             no-op (and prints why) if that file is missing. The pushed
+#                             file is deleted either way, never carried over by carry()
 #   stage2.sh timezone <zone> /newroot/etc/localtime -> /usr/share/zoneinfo/<zone>,
 #                             and /newroot/etc/timezone (the phone has no RTC/NTP yet;
 #                             push-rootfs.sh calls this with the laptop's zone)
@@ -68,12 +73,13 @@ carry() {
 		cp -a /lib/firmware/. "$NEWROOT/usr/lib/firmware/" 2>/dev/null
 	fi
 	mkdir -p "$NEWROOT/var/lib/6s-testkit"
-	# Exclude bt-address/bt-keys.tgz (F17, security-review.md): if seed hasn't
-	# run yet (e.g. a script failure between push and seed), these are more
-	# sensitive than the rootfs tarball and must not end up world-readable
-	# under /var/lib/6s-testkit as a side effect of carrying over test files.
+	# Exclude bt-address/bt-keys.tgz (F17, security-review.md) and phone-pin
+	# (same reasoning: the PIN provisioning step below deletes it right after
+	# use, but if that step never ran -- e.g. "go" without "pin" first -- it
+	# must not end up world-readable under /var/lib/6s-testkit as a side
+	# effect of carrying over test files).
 	find "$S" -maxdepth 1 -type f -size -8192k ! -name 'unpack.*' ! -name '*.tar.*' \
-		! -name 'bt-address' ! -name 'bt-keys.tgz' \
+		! -name 'bt-address' ! -name 'bt-keys.tgz' ! -name 'phone-pin' \
 		-exec cp -a {} "$NEWROOT/var/lib/6s-testkit/" \;
 	cp /HL_init.log "$NEWROOT/var/lib/6s-testkit/" 2>/dev/null
 }
@@ -106,6 +112,37 @@ seed() {
 	done
 }
 
+# Provision the lock-screen PIN (shell/system/README.md, docs/shell/DESIGN.md
+# "Lock screen PIN") before the phone ever boots this root: feed the PIN
+# (twice, matching ophone-pin's "New PIN:"/"Confirm PIN:" prompts) on stdin to
+# `ophone-pin set` run inside /newroot via chroot -- the same command
+# "sudo ophone-pin set" over SSH runs post-boot, just done here so an
+# unattended deploy can provision one non-interactively. /proc and /dev are
+# bind-mounted only for the duration of the call (python3's hashlib.scrypt and
+# os.urandom need neither in practice, but a stock python3 build can probe
+# /proc; nothing here is required to already be running for it to work).
+pin() {
+	[ -d "$NEWROOT/etc" ] || { echo "no userland in $NEWROOT"; exit 1; }
+	if [ ! -s "$S/phone-pin" ]; then
+		echo "no $S/phone-pin: skipping PIN provisioning (later: ssh + sudo ophone-pin set)"
+		return 0
+	fi
+	mountpoint -q "$NEWROOT/proc" || mount -t proc proc "$NEWROOT/proc"
+	mountpoint -q "$NEWROOT/dev" || mount --bind /dev "$NEWROOT/dev"
+	pin_value="$(cat "$S/phone-pin")"
+	printf '%s\n%s\n' "$pin_value" "$pin_value" | chroot "$NEWROOT" /usr/bin/env -i \
+		PATH=/usr/local/bin:/usr/bin HOME=/root OPHONE_USER=omarchy \
+		/usr/share/omarchy-phone/shell/bin/ophone-pin set
+	rc=$?
+	unset pin_value
+	umount "$NEWROOT/dev" 2>/dev/null
+	umount "$NEWROOT/proc" 2>/dev/null
+	rm -f "$S/phone-pin"
+	if [ "$rc" = 0 ]; then echo "PIN provisioned in the new root"
+	else echo "PIN provisioning FAILED (rc=$rc); provision later with: ssh + sudo ophone-pin set"; fi
+	return "$rc"
+}
+
 case "${1:-}" in
 prep) prep; df -m "$NEWROOT" | tail -1; free -m | head -2 ;;
 recv)
@@ -116,6 +153,7 @@ unpack)
 	prep; unpack_from "cat '$2'"; rm -f "$2" ;;
 status) status ;;
 seed) seed ;;
+pin) pin ;;
 timezone)
 	[ -n "${2:-}" ] || { echo "usage: stage2.sh timezone <zone>"; exit 1; }
 	timezone "$2" ;;
