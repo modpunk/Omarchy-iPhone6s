@@ -53,3 +53,10 @@ sudo `./boot.sh pongo && ./boot.sh linux`). Treat every crash as expensive.
 12. Don't read kernel-image linear-map aliases (oops #1). The phone is tainted and
     fragile now; prefer build-only verification for anything with an unproven
     remove/teardown path.
+13. (2026-09-29, user approved explicitly: "1. approved") Power-chip writes are allowed,
+    limited to the exact values iOS writes: D2255 PMIC GPIO 8 (BT REG_ON) and GPIO 10
+    (WLAN REG_ON); SN2400 charger reg 0x1d (0x04 / 0x06 / 0x00 HDQ handover);
+    display-PMU (chestnut) reg 0x05 bit 4 (touch analog supply). One write at a time,
+    read back before and after, log it, restore the original value when the test ends
+    where iOS would. Everything else on i2c0/i2c1/i2c2 stays read-only.
+    NVMe writes remain FORBIDDEN (would destroy the user's iOS install).
