@@ -41,7 +41,16 @@ no touch.
   `palera1n` + `Pongo.bin` + `pongoterm`, and the test `initramfs.gz`. Lay them out under one
   directory and point `HOOLOCK` at it (`kit/boot.sh` reads `$HOOLOCK/linux`, `$HOOLOCK/m1n1/m1n1.bin`,
   `$HOOLOCK/bin/*`, `$HOOLOCK/initramfs/initramfs.gz`; override any one with `KSRC`, `BUILD`,
-  `M1N1`, `BIN`, `INITRAMFS`, `OUT`).
+  `M1N1`, `BIN`, `INITRAMFS`, `OUT`). You'll also want a 16K-page kernel `.config` to start from
+  (`CONFIG_ARM64_16K_PAGES`) — copy in a working one before configuring in step 1, don't start from
+  an empty `O=` directory.
+- A clone of [Omarchy-Phone](https://github.com/modpunk/Omarchy-Phone) with the `shell` and
+  `phone-app` branches fetched. `build-rootfs.sh` takes them from `PHONE_SRC` (default
+  `~/Work/omarchy-phone`) at fixed pinned commits (`SHELL_REV`/`APP_REV`) — this is what actually
+  puts the shell from step 5 into the image, so it has to be there before you build the userland.
+- The Broadcom Bluetooth firmware (`.hcd`) for this phone, extracted per the "Firmware" section of
+  [`docs/drivers/bluetooth.md`](drivers/bluetooth.md) and placed where `FW_DIR` looks for it
+  (default `~/Work/hoolock-iphone5s/firmware/brcm/`). Without it, Bluetooth (step 6) never comes up.
 - For the RAM userland: `qemu-user-static` with the binfmt entry, a `/etc/subuid` range and
   unprivileged user namespaces enabled (common on a normal desktop distro). No root and no Docker
   needed — `tools/userland/build-rootfs.sh` re-execs itself into its own user namespace.
@@ -60,8 +69,10 @@ shortcut; you need the same combined kernel this repo tests against: `foundation
 `bluetooth` (through patch 0007, the LE-advertising fix that makes BLE keyboards pair) and
 `fast-reload`, all applied to one `$HOOLOCK/linux` tree.
 
-Get the patches on following `docs/CONTRIBUTING.md`'s recipe (`git am` onto commit `6831bc701`),
-in this order — `battery` and `bluetooth` both depend on `foundation`:
+Get the patches following `docs/CONTRIBUTING.md`'s recipe (`git am` onto commit `6831bc701`), in
+dependency order — `battery` and `bluetooth` both depend on `foundation`; where `fast-reload` and
+the others land relative to each other isn't documented, but all four touch different files apart
+from the shared `s800x-6s` device-tree source, which is where a conflict would show up:
 
 ```sh
 cd $HOOLOCK/linux && git checkout 6831bc701
@@ -71,14 +82,20 @@ git am /path/to/omarchy-iphone6s/patches/bluetooth/*.patch
 git am /path/to/omarchy-iphone6s/patches/fast-reload/*.patch
 ```
 
-In the resulting `.config`, turn on: `CONFIG_MUX_CORE=y`, `CONFIG_MUX_SN2400`,
-`CONFIG_BATTERY_BQ27XXX=y`, `CONFIG_BATTERY_BQ27XXX_HDQ_UART`, `CONFIG_SERIAL_DEV_BUS=y`,
-`CONFIG_I2C_APPLE=y` (battery), and `CONFIG_UHID=y` (lets BLE/HOGP keyboards work; without it only
-classic HID keyboards do). Then build it, pinning the release so module vermagic matches what the
-image expects:
+(If `$HOOLOCK/linux` is the same tree you use for live driver testing elsewhere, do this in a
+worktree branch instead — `testkit/TESTING-RULES.md` rules 1–2 keep that tree read-only. This
+walkthrough assumes a plain clone dedicated to the build.)
+
+Seed a working 16K-page `.config` into your build directory before configuring — starting
+`olddefconfig` from empty gives you a 4K-page kernel that won't run the ALARM userland. Then turn
+on, in that `.config`: `CONFIG_MUX_CORE=y`, `CONFIG_MUX_SN2400`, `CONFIG_BATTERY_BQ27XXX=y`,
+`CONFIG_BATTERY_BQ27XXX_HDQ_UART`, `CONFIG_SERIAL_DEV_BUS=y`, `CONFIG_I2C_APPLE=y` (battery), and
+`CONFIG_UHID=y` (lets BLE/HOGP keyboards work; without it only classic HID keyboards do). Build it,
+pinning the release so module vermagic matches what the image expects:
 
 ```sh
 export BUILD=~/Work/hoolock-iphone5s/build/fast-reload   # one build dir, used for everything below
+cp /path/to/a/working/16k-page.config "$BUILD/.config"   # e.g. config_16k, kept alongside $HOOLOCK
 make O="$BUILD" LLVM=1 ARCH=arm64 KERNELRELEASE=7.3.0-rc1-g6831bc701a6c olddefconfig
 make O="$BUILD" LLVM=1 ARCH=arm64 KERNELRELEASE=7.3.0-rc1-g6831bc701a6c \
   Image.gz apple/s8000-n71.dtb apple/s8003-n71m.dtb \
@@ -90,11 +107,25 @@ You'll point both `kit/boot.sh` (`BUILD=`) and the userland build (`KBUILD=`) at
 directory from here on, so the kernel, the dtbs and the three phone-driver modules all come from
 one matching build.
 
-## 2. First boot: DFU, checkm8, pongoOS, Linux
+## 2. Build the userland
 
-This first boot has to go through DFU. Once the phone is running a kernel with the fast-reload
-patch (which you just built), every later kernel swap can use `kit/reload.sh` instead — no
-buttons, no DFU (step 7).
+```sh
+cd ~/Work/omarchy-iphone6s
+KBUILD=~/Work/hoolock-iphone5s/build/fast-reload tools/userland/build-rootfs.sh
+tools/userland/mk-initramfs.sh               # wraps the stock ramdisk so it can switch_root into that rootfs
+```
+
+This bootstraps Arch Linux ARM rootlessly (`unshare --user`, qemu-aarch64 for scriptlets): a few
+minutes, about 270 MB of packages the first time. It installs systemd, Hyprland, the Omarchy Phone
+shell and Phone app (from `PHONE_SRC`, see "What you need"), BlueZ, PipeWire, the Bluetooth
+firmware (from `FW_DIR`), and copies in the three driver modules from `$KBUILD` built in step 1 —
+it refuses to continue if any of these are missing or don't match the kernel release.
+
+## 3. First and only DFU boot: checkm8, pongoOS, Linux
+
+Everything from here on can be pushed to the phone without touching it again: this is the one
+button-and-DFU boot you need. Once the phone is running a kernel with the fast-reload patch (which
+you just built), later kernel swaps can use `kit/reload.sh` instead — no buttons, no DFU (step 7).
 
 **Enter DFU mode:**
 
@@ -105,14 +136,21 @@ buttons, no DFU (step 7).
 If you land in **recovery mode** instead (a "connect to a computer" screen), `palera1n` can drive
 the phone from there back into DFU; you don't have to restart the button sequence by hand.
 
-**Build the boot blob and send it**, from the repo root:
+**Build the boot blob and send it.** Run this from inside the directory that holds the `boot.sh`
+you're invoking — its path handling assumes that, and copying it elsewhere or `cd`-ing away from
+it before running it breaks the relative paths it builds from:
 
 ```sh
-cd ~/Work/omarchy-iphone6s        # kit/boot.sh must be run from the repo root, not copied elsewhere
-BUILD=~/Work/hoolock-iphone5s/build/fast-reload kit/boot.sh blob   # also records out/blob-dtbs/, needed by step 7
+cd ~/Work/omarchy-iphone6s
+INITRAMFS=~/Work/hoolock-iphone5s/build/userland/initramfs-userland.gz \
+  BUILD=~/Work/hoolock-iphone5s/build/fast-reload kit/boot.sh blob   # also records out/blob-dtbs/, needed by step 7
 kit/boot.sh pongo    # checkm8 + load pongoOS (asks for sudo)
 kit/boot.sh linux    # send the blob to pongoOS and boot it
 ```
+
+Use the **patched** `initramfs-userland.gz` from step 2 here, not the stock HoolockLinux ramdisk —
+its `/init` knows how to `switch_root` into the userland once you push it, and otherwise behaves
+exactly like the stock one (see [`docs/userland.md`](userland.md)).
 
 Notes on `kit/boot.sh linux`:
 
@@ -128,32 +166,7 @@ telnet 172.16.42.1        # root shell, no auth (busybox telnetd) — fine only 
 # or: kit/boot.sh shell   # USB serial (autologin root)
 ```
 
-## 3. Build the userland
-
-```sh
-cd ~/Work/omarchy-iphone6s
-KBUILD=~/Work/hoolock-iphone5s/build/fast-reload tools/userland/build-rootfs.sh
-tools/userland/mk-initramfs.sh               # wraps the stock ramdisk so it can switch_root into that rootfs
-```
-
-This bootstraps Arch Linux ARM rootlessly (`unshare --user`, qemu-aarch64 for scriptlets): a few
-minutes, about 270 MB of packages the first time. It installs systemd, Hyprland, the Omarchy Phone
-shell and Phone app, BlueZ, PipeWire, and copies in the three driver modules from `$KBUILD`
-built in step 1 (it will refuse if they're missing or don't match the kernel release).
-
-## 4. Boot the patched ramdisk
-
-```sh
-INITRAMFS=~/Work/hoolock-iphone5s/build/userland/initramfs-userland.gz \
-  BUILD=~/Work/hoolock-iphone5s/build/fast-reload kit/boot.sh blob
-kit/boot.sh pongo && kit/boot.sh linux
-```
-
-Same DFU sequence and same `LIBUSB_ERROR_IO`-is-normal caveat as step 2. Use the **patched**
-`initramfs-userland.gz` here, not the stock HoolockLinux ramdisk — its `/init` knows how to
-`switch_root` into the userland once you push it (see [`docs/userland.md`](userland.md)).
-
-## 5. Push the userland and hand over
+## 4. Push the userland and hand over
 
 ```sh
 tools/userland/push-rootfs.sh --go
@@ -181,14 +194,14 @@ ssh omarchy@172.16.42.1     # password: omarchy (also has passwordless sudo)
 ssh root@172.16.42.1        # key auth only (your laptop's ~/.ssh/*.pub is baked into authorized_keys)
 ```
 
-The `omarchy`/`omarchy` credentials and the unauthenticated root telnet from step 2 are **dev
+The `omarchy`/`omarchy` credentials and the unauthenticated root telnet are **dev
 defaults, fine only while the phone is tethered to your laptop** over the private
 `172.16.42.0/24` USB link — there is no other network this reaches.
 
 If SSH complains the host key for `172.16.42.1` changed, that's an old entry from a previous
 build: `ssh-keygen -R 172.16.42.1`.
 
-## 6. The shell starts itself
+## 5. The shell starts itself
 
 Hyprland and the Omarchy Phone shell start automatically as an `omarchy-phone-session` user unit
 once you're in — seatd hands out the seat, no manual launch needed:
@@ -221,10 +234,13 @@ doesn't work here.
 ### Don't lock the screen
 
 The lock screen's PIN pad checks the **user's login password** through PAM, and the default
-password (`omarchy`) is not numeric — so once locked (short-press Power, or `ophone-ctl lock`),
-there is currently no PIN you can type on the pad to unlock it. **Don't lock the phone** until
-you've either set a numeric password for the `omarchy` user or built the image with one
-(`USERPASS=` at build time).
+password (`omarchy`) is not numeric — so once locked, there is currently no PIN you can type on
+the pad to unlock it. **Don't lock the phone** until you've either set a numeric password for the
+`omarchy` user or built the image with one (`USERPASS=` at build time). The easiest ways to
+trigger it by accident from a keyboard are `SUPER+L` (lock) and `SUPER+Esc` (the power key — a tap
+locks and blanks the screen; a long press opens the power menu, which also has a Lock item), plus
+whatever your keyboard's own power/lock media key sends. Avoid all of them until the numeric PIN
+lands.
 
 If you do get locked out, it's recoverable over SSH, which the lock screen doesn't block:
 
@@ -232,13 +248,13 @@ If you do get locked out, it's recoverable over SSH, which the lock screen doesn
 ssh omarchy@172.16.42.1 systemctl --user restart omarchy-phone-session   # the shell starts unlocked
 ```
 
-## 7. A Bluetooth keyboard, since there's no touch
+## 6. A Bluetooth keyboard, since there's no touch
 
 Pair it **from the phone**, not the laptop — the keyboard has to be paired to the phone's own
 Bluetooth chip:
 
 ```sh
-ssh omarchy@172.16.42.1 bluetoothctl
+ssh -t omarchy@172.16.42.1 bluetoothctl
 # agent on; default-agent; scan on; pair <mac>; trust <mac>; connect <mac>
 ```
 
@@ -257,12 +273,11 @@ A few things that only show up in real use:
   phone's Bluetooth public address) are seeded back in automatically on every push, before the
   handover. Both stay out of git (`~/Work/hoolock-iphone5s/firmware/` by convention); pass
   `NO_BT_SEED=1` to skip seeding.
-- **A USB hub port can stop responding after a failed reload or a bad kexec.** If the phone (or
-  the keyboard's dongle, if you're using one instead of the phone's own radio for something else)
-  goes quiet after a `kit/reload.sh` attempt, try a different port on the hub before assuming the
-  phone itself is stuck.
+- **A USB hub port can stop passing data after a failed reload or a bad kexec.** If the phone goes
+  quiet after a `kit/reload.sh` attempt, try a different port on the hub before assuming the phone
+  itself is stuck.
 
-## 8. Faster iteration: reload without DFU (optional)
+## 7. Faster iteration: reload without DFU (optional)
 
 Now that the phone is running a kernel with the fast-reload patch, later kernel changes can go
 straight to the phone with a kexec instead of another DFU cycle:
@@ -273,8 +288,14 @@ kit/reload.sh -n       # dry run first, if you want to see what it would carry o
 ```
 
 A reload is a reboot as far as the phone's running state goes: you land back in the ramdisk, with
-the userland gone, so redo steps 5 onward afterwards (`push-rootfs.sh --go`). See
-[`docs/fast-reload.md`](fast-reload.md) for the full mechanism and its failure modes.
+the userland gone, so redo steps 4 onward afterwards (`push-rootfs.sh --go`).
+
+**Do this only while the phone is still in the ramdisk stage, before `push-rootfs.sh --go`.** A
+reload started from inside the Arch userland currently loses the USB connection (no
+re-enumeration) and needs a full DFU recovery to get back — a fix for this is in review
+([#13](https://github.com/modpunk/Omarchy-iPhone6s/pull/13)), but on `main` today, treat a reload
+from inside the userland session as a DFU trip waiting to happen. See
+[`docs/fast-reload.md`](fast-reload.md) for the full mechanism and its other failure modes.
 
 ## Charging
 
@@ -302,7 +323,7 @@ repo's software manages.
 | Phone doesn't answer for 60+ seconds at any point | Per `testkit/TESTING-RULES.md` rule 8: stop, don't retry in a loop — it has likely panicked or hung. Recover through DFU: `kit/boot.sh pongo && kit/boot.sh linux`. |
 | Locked yourself out of the lock screen | See "Don't lock the screen" above — recover over SSH: `systemctl --user restart omarchy-phone-session`. |
 | Bluetooth keyboard doesn't do anything | It must be paired *from the phone*, not the laptop; confirm with `bluetoothctl` over SSH/telnet on the phone. |
-| Keyboard pairing didn't survive a reload/reboot | Expected — the root is RAM-only. Seed it back with `BT_KEYS_TGZ`/`BT_ADDR_FILE` on the next `push-rootfs.sh` (see step 7). |
+| Keyboard pairing didn't survive a reload/reboot | Expected — the root is RAM-only. Seed it back with `BT_KEYS_TGZ`/`BT_ADDR_FILE` on the next `push-rootfs.sh` (see step 6). |
 | Clock is wrong inside the userland | `push-rootfs.sh` sets the kernel clock automatically on every push; it doesn't persist to the PMIC. Run `sudo hwclock -w --utc` once you're in SSH. |
 
 ## Safety notes
@@ -319,5 +340,5 @@ repo's software manages.
 
 New here and want the bigger picture first? Start with the [README](../README.md); for driver
 internals see [`docs/drivers/`](drivers/), for the full userland build/session detail see
-[`docs/userland.md`](userland.md), and for the kexec mechanics behind step 8 see
+[`docs/userland.md`](userland.md), and for the kexec mechanics behind step 7 see
 [`docs/fast-reload.md`](fast-reload.md).
