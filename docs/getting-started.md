@@ -18,7 +18,7 @@ Current status (see the [README](../README.md#status) for the always-up-to-date 
 | Works, verified on the phone | Doesn't (yet) |
 |---|---|
 | Framebuffer display (750x1334, simpledrm), Hyprland 0.56 + software rendering (llvmpipe), foot terminal | **Touch** — the SPI touch controller stays unpowered (the PMU LDO voltage code is unknown); the screen is display-only |
-| The **Omarchy Phone shell** (QuickShell) and the Phone app, driving everything from a keyboard | **Charging** — the SN2400 charger is an undocumented Apple/TI part with no register map Linux can drive. See "Charging" below. |
+| The **Omarchy Phone shell** (QuickShell) and the Phone app, driving everything from a keyboard | **Charging control** — the SN2400 charges on its own when the supply is strong enough (a self-powered hub), but Linux can't configure it (no public register map). See "Charging" below. |
 | Bluetooth (BCM4350): LE scan, and a BLE keyboard over `uhid` | **Wi-Fi and storage** — both sit behind the A9's PCIe block, which is shelved; no network but the USB link to the laptop, and the root filesystem lives in tmpfs |
 | Battery gauge (bq27540 over HDQ): percent, voltage, current, temperature, health | Audio, camera, modem, and anything behind the AOP coprocessor, NFC, Secure Enclave — out of scope |
 | All 5 buttons, backlight, PMIC RTC, watchdog, both CPU cores, 2 GB RAM, USB networking (`172.16.42.1` <-> `.2`) + a root USB telnet shell, fast kernel reload (kexec, no DFU) | |
@@ -293,20 +293,24 @@ the userland gone, so redo steps 4 onward afterwards (`push-rootfs.sh --go`).
 **Do this only while the phone is still in the ramdisk stage, before `push-rootfs.sh --go`.** A
 reload started from inside the Arch userland currently loses the USB connection (no
 re-enumeration) and needs a full DFU recovery to get back — a fix for this is in review
-([#13](https://github.com/modpunk/Omarchy-iPhone6s/pull/13)), but on `main` today, treat a reload
+([#13](https://github.com/modpunk/Omarchy-iPhone6s/pull/13)) and was verified on the phone (five
+reloads, including from the running userland, all kept USB), but until it merges to `main`, treat a reload
 from inside the userland session as a DFU trip waiting to happen. See
 [`docs/fast-reload.md`](fast-reload.md) for the full mechanism and its other failure modes.
 
 ## Charging
 
-The SN2400 charger is an undocumented Apple/TI part; Linux has no driver for it and can't program
-it to charge the battery. The documented expectation is idle drain of roughly 80 mA (about 15
-hours per charge) with nothing else driving the current budget. In practice, what decides whether
-the phone gains or loses charge over a session is the **hub**, not the OS: a hub with its own
-power supply supplies roughly +300 mA more than a bus-powered one, which in testing has been
-enough to net-charge rather than drain. Don't rely on this being controllable or precise — it's
-incidental to how much current the hub happens to make available at the port, not something this
-repo's software manages.
+The SN2400 charger charges the battery **by itself** whenever the USB supply can deliver enough
+current; Linux doesn't need to program it (and can't: it's an undocumented Apple/TI part with no
+public register map, so charge limits and source detection aren't configurable yet). What decides
+whether the phone gains or loses charge is therefore the **supply**:
+
+- On a **USB hub with its own power supply**, the gauge reports `status=Charging` at roughly
+  +300 mA (measured on the idle ramdisk; less under Hyprland), about 4-5 hours from 10 % to full.
+- On an **unpowered hub or laptop port**, the cable only covers the phone's own load (net about
+  -75 to -85 mA at idle, roughly 15 hours per charge), so the battery slowly drains.
+- Heavy work (unpacking the rootfs, full-speed rendering) can draw far more than the supply
+  provides, so check `cat /sys/class/power_supply/bq27540-0/capacity` before long sessions.
 
 ## Troubleshooting
 
