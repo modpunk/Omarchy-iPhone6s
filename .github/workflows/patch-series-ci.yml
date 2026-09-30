@@ -116,6 +116,9 @@ jobs:
           #                  serial1/serial3..serial6 DT nodes and PMIC fixes.
           #   - battery:     depends on foundation (docs/drivers/battery.md:
           #                  needs the serial5 node from foundation/0001).
+          #   - battery-fix: depends on foundation,battery (patches the
+          #                  bq27xxx_battery_hdq_uart.c that battery/0004 adds:
+          #                  charge_now reads RC not NAC).
           #   - bluetooth:   depends on foundation (docs/drivers/bluetooth.md:
           #                  needs the serial1 node from foundation/0001).
           #   - touch:       standalone (docs/drivers/touch.md: "6 patches,
@@ -127,6 +130,7 @@ jobs:
           SERIES=(
             "foundation:"
             "battery:foundation"
+            "battery-fix:foundation,battery"
             "bluetooth:foundation"
             "touch:"
             "fast-reload:"
