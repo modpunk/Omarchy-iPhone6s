@@ -1,0 +1,40 @@
+#!/bin/sh
+# on-resume action for both hypridle listeners (docs/userland.md "Idle and
+# lock (system side)").
+#
+# The phone shell sets misc.key_press_enables_dpms and mouse_move_enables_dpms
+# to false (shell/hypr/hyprland.lua: "only the power key wakes the screen"):
+# a stray touch must not relight the panel. ext-idle-notify-v1's "resumed"
+# event, which fires this script, does NOT make that distinction -- it fires
+# on any input, not just the power key. So this must not unconditionally
+# restore the backlight: it waits briefly for DPMS to actually be back on
+# (the shell's power-key handler calling hl.dsp.dpms enable; in the plain
+# session, nothing else enables it, so it simply stays off) before touching
+# the backlight at all. If DPMS never comes back on, the backlight stays off
+# with it -- matching "only the power key wakes the screen".
+#
+# Known gap (not fixed here -- would need a shell-side hook): a screen the
+# shell wakes WITHOUT input, e.g. an incoming call (Notifs.qml ->
+# Phone.screenOnNow()), fires no ext-idle-notify resume, so this script never
+# runs and the backlight stays dark under a lit DPMS output until the next
+# real touch. Fixing that needs one line in the shell (out of scope: this
+# branch is build/OS-side only).
+set -eu
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+STATE="$XDG_RUNTIME_DIR/phone-idle-backlight"
+
+dpms_on() { hyprctl monitors -j 2>/dev/null | grep -q '"dpmsStatus": *true'; }
+
+i=0
+while [ "$i" -lt 20 ]; do   # ~2s: give the shell's own dpms-enable a moment to land
+	dpms_on && break
+	i=$((i + 1))
+	sleep 0.1
+done
+dpms_on || exit 0   # still off: this resume wasn't the power key; leave it dark
+
+if [ -s "$STATE" ]; then
+	v="$(cat "$STATE")"
+	rm -f "$STATE"
+	brightnessctl -c backlight set "$v" >/dev/null 2>&1 || brightnessctl -c backlight set 100% >/dev/null 2>&1
+fi

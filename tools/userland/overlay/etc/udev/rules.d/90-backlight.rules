@@ -1,0 +1,8 @@
+# ALARM's brightnessctl package ships no udev rule (unlike x86 Arch's), so
+# /sys/class/backlight/*/brightness stays root:root 0644 -- brightnessctl
+# and idle-screen-{off,on} (docs/userland.md "Idle and lock") would fail as
+# the omarchy user without this. Same rule content as Arch's brightnessctl
+# package; omarchy is in group video (build-rootfs.sh useradd -G ... video).
+SUBSYSTEM=="backlight", ACTION=="add", \
+	RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", \
+	RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"

@@ -1,0 +1,30 @@
+#!/bin/sh
+# on-timeout action for both hypridle listeners in phone-idle's generated
+# config (docs/userland.md "Idle and lock (system side)"). $1:
+#   always       the main (PHONE_IDLE_SECONDS) listener: always blank.
+#   if-dpms-off  the short (PHONE_IDLE_LOCK_DETECT_SECONDS) listener: only
+#                blank if DPMS is already off -- catches a manual power-key
+#                lock, which the shell DPMS-disables immediately and which
+#                isn't "idle" by itself (ext-idle-notify only starts timing
+#                from the power key's own input event).
+#
+# hyprctl dispatch here uses this fork's Lua dispatcher form (hl.dsp.*), not
+# the classic "dpms off" string -- see the ALARM-packaged sample at
+# /usr/share/hypr/hypridle.conf, which already uses this exact form; the
+# classic string form parses as Lua, fails, and still exits 0 (silent no-op).
+set -eu
+: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+STATE="$XDG_RUNTIME_DIR/phone-idle-backlight"
+
+dpms_off() { hyprctl monitors -j 2>/dev/null | grep -q '"dpmsStatus": *false'; }
+
+if [ "${1:-always}" = "if-dpms-off" ] && ! dpms_off; then
+	exit 0   # not locked/idle by another path yet; leave the backlight alone
+fi
+
+if [ ! -e "$STATE" ]; then
+	cur="$(brightnessctl -c backlight -m get 2>/dev/null | cut -d, -f3)"
+	[ -n "${cur:-}" ] && printf '%s\n' "$cur" > "$STATE"
+fi
+brightnessctl -c backlight set 0 >/dev/null 2>&1 || true
+hyprctl dispatch 'hl.dsp.dpms({ action = "off" })' >/dev/null 2>&1 || true

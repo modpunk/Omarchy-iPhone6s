@@ -104,6 +104,7 @@ smoke busybox
 smoke qs --version
 smoke /usr/lib/upowerd --help
 smoke brightnessctl --version
+smoke hypridle --help
 smoke python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw; print('PyGObject', gi.__version__, 'GTK', Gtk.get_major_version(), Gtk.get_minor_version(), 'Adw', Adw.get_major_version(), Adw.get_minor_version())"
 smoke env PYTHONPATH=/usr/share/omarchy-phone/apps/phone python3 -c "import omarchy_phone.ui, omarchy_phone.daemon, omarchy_phone.cli; print('Phone app modules import')"
 smoke phonectl --help
@@ -190,9 +191,16 @@ out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin SYSTEMD_LOG_LEVEL=warning /u
 	| grep -v -i 'dbus\|bus\b\|Failed to connect\|proc\|cgroup' | head -3 | tr '\n' ' ')"
 echo "${out:-ok}"
 printf '  %-28s ' "scripts sh -n"
-ok=yes; for f in /usr/lib/phone-tk/bt-address /usr/lib/phone-tk/wait-display /usr/local/bin/phone-hyprland; do
+ok=yes; for f in /usr/lib/phone-tk/bt-address /usr/lib/phone-tk/wait-display /usr/local/bin/phone-hyprland \
+	/usr/lib/phone-tk/phone-idle /usr/lib/phone-tk/idle-screen-off /usr/lib/phone-tk/idle-screen-on; do
 	chroot "$ROOT" /usr/bin/sh -n "$f" 2>/dev/null || ok="NO ($f)"; [ -x "$ROOT$f" ] || ok="NO ($f not executable)"; done
 echo "$ok"
+printf '  %-28s ' "backlight udev rule"
+[ -e "$ROOT/etc/udev/rules.d/90-backlight.rules" ] && echo "ok (ALARM's brightnessctl ships none)" || echo "NO"
+printf '  %-28s ' "omarchy in group video"
+grep -q '^video:[^:]*:[^:]*:.*\bomarchy\b' "$ROOT/etc/group" 2>/dev/null && echo yes || echo "NO"
+printf '  %-28s ' "idle hook in hyprland.lua"
+grep -q 'phone-idle' "$ROOT/etc/skel/.config/hypr/hyprland.lua" 2>/dev/null && echo "ok (see 'hypr config' checks above for Lua syntax)" || echo NO
 printf '  %-28s ' "no BT/PIN secrets in image"
 # bt-address, bt-keys.tgz and the PIN's pin-hash are all seeded/provisioned at
 # deploy time (push-rootfs.sh -> stage2.sh seed/pin), never baked into the image.

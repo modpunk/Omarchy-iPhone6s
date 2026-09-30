@@ -179,6 +179,7 @@ What used to be typed after every boot is now in the image:
 | clock | `push-rootfs.sh`: `date -u -s @<laptop epoch>` in the ramdisk after unpacking | |
 | Hyprland | `misc = { disable_hyprland_guiutils_check = true }` in both session configs (hyprland-guiutils isn't installed) | |
 | phone session | `/etc/systemd/user/omarchy-phone-session.service`, enabled for `omarchy` only (`~/.config/systemd/user/default.target.wants/`; linger starts that user manager at boot). It waits up to 30 s for `/run/seatd.sock` and `/dev/dri/card0`, then runs `phone-hyprland --fg` (log `~/.cache/hyprland.log`), `Restart=on-failure` | `systemctl --user disable --now omarchy-phone-session` (as omarchy), or `touch ~/.config/omarchy-phone/no-autostart` |
+| idle display power-off | `hyprland.lua`'s `hyprland.start` hook execs `/usr/lib/phone-tk/phone-idle` (hypridle), which blanks DPMS + the backlight after `PHONE_IDLE_SECONDS` (default 180 s) idle, and on a manual lock; see "Idle and lock (system side)" | `/etc/omarchy-phone/idle.conf` (`PHONE_IDLE_SECONDS=0` effectively disables the main listener: hypridle rejects a 0 s timeout, so use a very large value instead), or `pkill hypridle` for the current session |
 
 The Bluetooth address and pairing keys are per phone and stay out of git and out of the image
 (`check-rootfs.sh` checks that `/etc/omarchy-phone` and `/var/lib/bluetooth` are empty).
@@ -437,6 +438,96 @@ it's a per-device secret provisioned at deploy time, not part of the build
 Either way the PIN itself is never printed, logged or committed; only `ophone-pin`'s own
 "wrote /etc/omarchy-phone/pin-hash (owner root, group omarchy, mode 640)" confirmation is.
 
+## Idle and lock (system side)
+
+The phone drains about 80 mA idle and can't charge under Linux, so blanking the screen when
+nobody's looking matters. There are now **two independent idle mechanisms**, and they're meant
+to coexist rather than be merged into one:
+
+1. **The phone shell** (`shell/qs/Services/Phone.qml`, `Config.qml`) already runs its own
+   `ext-idle-notify-v1` client through Quickshell's `IdleMonitor`, at `OPHONE_IDLE_SECONDS`
+   (env override) or `Config.idleLockSeconds` (default 180 s). On idle it locks (if a PIN is
+   configured) and calls `hl.dsp.dpms({ action = "disable" })` — DPMS off — through
+   `Hyprland.dispatch()`. It does **not** touch the backlight.
+2. **hypridle** (this branch): `/usr/lib/phone-tk/phone-idle`, execed from `hyprland.lua`'s
+   `hyprland.start` hook (so it inherits `WAYLAND_DISPLAY`/`HYPRLAND_INSTANCE_SIGNATURE` the same
+   way `qs` and `foot` do — no systemd unit has to rediscover them). It's a **second, independent**
+   `ext-idle-notify-v1` consumer with its own timeout(s); the protocol is built for exactly this
+   (any number of clients can each register their own idle notification), so it doesn't race or
+   "win" against the shell's timer, and the shell has no idea it exists. Its job is what the shell
+   doesn't do:
+   - Drop the `apple-dwi-bl` backlight to 0 via `brightnessctl -c backlight` (`/sys/class/
+     backlight/*/brightness`) — the actual ~80 mA save. simpledrm has no real panel driver, so
+     DPMS off on `/dev/dri/card0` may only stop scanout without touching backlight power; this
+     hasn't been provable without the phone (see "Unverified" below), so the backlight write comes
+     first in `idle-screen-off` and is restored last in `idle-screen-on`.
+   - Give the **plain** (foot-only, `PHONE_PLAIN=1`) fallback session — which has no idle handling
+     of its own at all — DPMS-off too.
+
+`phone-idle` generates `$XDG_RUNTIME_DIR/phone-idle-hypridle.conf` (not a static file — this is
+how the timeouts stay configurable, see below) with two `listener` blocks:
+
+| listener | timeout | on-timeout | catches |
+|---|---|---|---|
+| main | `PHONE_IDLE_SECONDS` (default 180, same as `Config.idleLockSeconds`) | `idle-screen-off always`: save current brightness, backlight to 0, DPMS off | real idle (belt-and-suspenders in the phone-shell session; the only mechanism in the plain session) |
+| lock-detect | `PHONE_IDLE_LOCK_DETECT_SECONDS` (default 5) | `idle-screen-off if-dpms-off`: same, but only if DPMS is *already* off | a manual power-key lock, which the shell DPMS-disables immediately — that isn't "idle" by itself, so only the short listener's own idle timer (reset by the power key's input event, same as the main listener's) picks it up, a few seconds later |
+
+**The dpms dispatcher call.** `hyprctl dispatch` on this Hyprland build takes a Lua expression
+(`hl.dsp.*`), not the classic `dpms off` string — the old string form parses as Lua, fails, and
+**still exits 0** (silent no-op; see the `hyprctl-dispatch-is-lua` gotcha from this build's other
+sessions). `idle-screen-off`/`idle-screen-on` use `hyprctl dispatch 'hl.dsp.dpms({ action = "off"
+})'` / `"on"`, matching the ALARM-packaged sample at `/usr/share/hypr/hypridle.conf` for this
+fork. **Note the discrepancy:** the shell's own `Phone.qml` calls `hl.dsp.dpms({ action =
+"disable" })` / `"enable"` — a different action string. Neither has run on the real phone yet
+(docs above: the shell "hasn't run on the phone yet"), so which spelling `hl.dsp.dpms` actually
+accepts is unverified; if only one works, the shell's own DPMS-off may be silently doing nothing
+today, independent of this branch. **First live boot should check this** (see "Unverified").
+
+**Why on-resume doesn't just re-enable everything.** The phone shell's `hyprland.lua` sets
+`misc.key_press_enables_dpms = false` and `mouse_move_enables_dpms = false` — "only the power key
+wakes the screen" — deliberately different from the desktop default (`true`/`true` in
+`/usr/share/omarchy/default/hypr/input.lua`), so a stray touch in a pocket can't relight the
+panel. `ext-idle-notify-v1`'s "resumed" event, which fires `idle-screen-on`, doesn't make that
+distinction: it fires on *any* input, not just the power key. So `idle-screen-on` never
+unconditionally restores anything. It polls `hyprctl monitors -j` for `dpmsStatus` (bounded, up
+to ~2 s, to give the shell's own power-key handler a moment to land — not a standing poll loop),
+and only restores the backlight once DPMS is actually back on. If DPMS never comes back on (a
+touch that wasn't the power key), the backlight stays off with it. This is a deliberate departure
+from the generic hypridle pattern (which usually re-enables DPMS unconditionally on resume) made
+specifically because of the phone shell's `key_press_enables_dpms = false`.
+
+**Configuring the timeouts:** `/etc/omarchy-phone/idle.conf` (shell-sourceable `KEY=VALUE`,
+alongside the other per-phone files there) is the persistent way to set
+`PHONE_IDLE_SECONDS`/`PHONE_IDLE_LOCK_DETECT_SECONDS`; env vars set on the session (e.g. in
+`omarchy-phone-session.service`, or by hand over ssh before restarting the session) work too.
+`PHONE_IDLE_SECONDS` falls back to `OPHONE_IDLE_SECONDS` (the shell's own env override) if that's
+set, so one knob can drive both — but `idle.conf` doesn't reach the shell, and `OPHONE_IDLE_SECONDS`
+doesn't reach `idle.conf`, so if you diverge them on purpose, keep this branch's value **at or
+above** the shell's, or the panel will go dark a few seconds before the shell's own lock screen
+has painted (harmless, but looks like a glitch).
+
+**Known gaps, not fixed here (would need a shell-side change, out of scope: build/OS-side only):**
+- A screen the shell wakes *without* input — an incoming call
+  (`Notifs.qml`: `Phone.screenOnNow()`) — fires no `ext-idle-notify` resume, so `idle-screen-on`
+  never runs and the backlight stays dark under a lit DPMS output until the next real touch.
+- The shell's own DPMS-off/on calls are themselves unverified on hardware (see above).
+
+**Permissions:** ALARM's `brightnessctl` package ships no udev rule (unlike Arch's x86 one), so
+`/sys/class/backlight/*/brightness` would stay root:root without
+`overlay/etc/udev/rules.d/90-backlight.rules` (added by this branch, same content as Arch's rule:
+`chgrp video` + `g+w` on `ACTION=="add"`). `omarchy` is already in group `video`
+(`build-rootfs.sh` `useradd -G ... video`), so this also fixes `ophone-sys brightness` for the
+same reason.
+
+**Unverified (needs the real phone):**
+- Whether `hl.dsp.dpms({ action = "off"/"on" })` (this branch) and `{ action = "disable"/"enable"
+  }` (the shell) are both accepted, aliases of each other, or only one works.
+- Whether DPMS off on simpledrm's `card0` measurably changes power draw at all, independent of the
+  backlight write — motivating why the backlight write, not DPMS, is treated as the real fix.
+- The lock-detect listener's ~5 s window in practice (does `dpmsStatus` reliably flip fast enough
+  after `hl.dsp.dpms` for a 5 s poll to catch it, or does it need to be longer).
+- Actual current draw before/after (no ammeter access from here).
+
 ## Kernel asks (for the integration config)
 
 - `CONFIG_RFKILL=y`: iwd and bluetoothd warn without `/dev/rfkill`.
@@ -521,5 +612,7 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/overlay/etc/nftables.conf` | phone | default-deny inbound firewall (`lo` + `usb0` only, see "Security") |
 | `tools/userland/overlay/etc/systemd/system/sshd.service.d/10-phone.conf` | phone | orders sshd after `usb0`, matches `phone-telnetd.service`'s restart backoff (see "Security", F7) |
 | `tools/userland/overlay/etc/systemd/user/omarchy-phone-session.service`, `overlay/usr/lib/phone-tk/wait-display` | phone | starts the phone session at boot |
+| `tools/userland/overlay/usr/lib/phone-tk/phone-idle`, `idle-screen-off`, `idle-screen-on` | phone (execed at `hyprland.start`) | hypridle launcher + on-timeout/on-resume actions: DPMS + backlight (see "Idle and lock (system side)") |
+| `tools/userland/overlay/etc/udev/rules.d/90-backlight.rules` | phone | group-`video` write access to `/sys/class/backlight/*/brightness` (ALARM's `brightnessctl` ships no rule) |
 | `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `pin`, `timezone`, `go`, `nsboot` |
 | `tools/userland/phone/userland-switch.sh` | phone (PID 1) | sourced by the patched `/init` |
