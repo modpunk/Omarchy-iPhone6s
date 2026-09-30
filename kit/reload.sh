@@ -145,25 +145,37 @@ fi
 
 # 4. Jump. kexec-jump.sh detaches (a systemd transient unit on the Arch userland),
 #    unbinds the configfs gadget so dwc2 is stopped cleanly, then kexecs. The telnet
-#    session dies at the unbind, so the drop below proves the unbind, not the kexec.
+#    session used to prove the unbind by dying; a fast reload can instead bring the
+#    new kernel's USB back up inside a single polling interval, so "the phone
+#    answers" is no longer proof of anything by itself. Read
+#    /proc/sys/kernel/random/boot_id before the jump and require it to change: a
+#    reachable phone still reporting the old id means the jump never started (fail
+#    fast), a changed id means the new kernel is up, and an unreachable phone is the
+#    normal in-between (keep waiting, up to the timeout below for a real failure).
+old_bootid="$("$PH" run 'cat /proc/sys/kernel/random/boot_id' 10)" || die "phone not reachable before the jump"
+old_bootid="$(printf '%s' "$old_bootid" | tr -d '[:space:]')"
+[ -n "$old_bootid" ] || die "could not read the phone's boot_id before the jump; not jumping"
 jumpargs=""
 [ "$QUIESCE" = 1 ] || jumpargs=--no-quiesce
 say "kexec (USB gadget $([ "$QUIESCE" = 1 ] && echo "unbound first" || echo "left bound"))"
 "$PH" lock "sh /tmp/6s/kexec-jump.sh $jumpargs" 40
-down=0
-for _ in $(seq 1 30); do
-	python3 "$REPO/testkit/phone.py" 'true' 3 >/dev/null 2>&1 || { down=1; break; }
-	sleep 1
-done
-[ "$down" = 1 ] || die "phone still answers on the old kernel after 30 s: the jump did not start (check dmesg | grep fast-reload; journalctl -u 'fast-reload-jump-*')"
 say "waiting for the new kernel"
-for _ in $(seq 1 60); do
-	if python3 "$REPO/testkit/phone.py" 'true' 5 >/dev/null 2>&1; then
+i=0
+for _ in $(seq 1 75); do
+	i=$((i + 1))
+	new_bootid="$(python3 "$REPO/testkit/phone.py" 'cat /proc/sys/kernel/random/boot_id' 5 2>/dev/null)" || new_bootid=""
+	new_bootid="$(printf '%s' "$new_bootid" | tr -d '[:space:]')"
+	if [ -n "$new_bootid" ] && [ "$new_bootid" != "$old_bootid" ]; then
 		"$PH" run 'uname -rv; echo "cpus online: $(cat /sys/devices/system/cpu/online)"; dmesg | grep -iE "spin-table park|smp: Brought up|CPU1: " | tail -4'
 		echo "reload done in $(( $(date +%s) - t0 )) s"
 		exit 0
 	fi
+	# Well past the jump script's own ~3 s detach+unbind delay: still seeing the old
+	# id here means the jump did not start at all, not that it's still in flight.
+	if [ -n "$new_bootid" ] && [ "$i" -ge 10 ]; then
+		die "phone still answers on the old kernel (boot_id unchanged) after $((i * 2)) s: the jump did not start (check dmesg | grep fast-reload; journalctl -u 'fast-reload-jump-*')"
+	fi
 	sleep 2
 done
-die "new kernel not reachable after ~3 min. Look at the phone screen (fbcon), then recover the slow way:
+die "new kernel not reachable after ~3 min (boot_id never changed from $old_bootid, phone unreachable). Look at the phone screen (fbcon), then recover the slow way:
   kit/boot.sh pongo && kit/boot.sh linux   (DFU)"
