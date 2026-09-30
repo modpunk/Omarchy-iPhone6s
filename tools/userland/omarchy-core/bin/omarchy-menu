@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# omarchy:summary=Open the Omarchy menu (phone: fzf in a foot window)
+# Omarchy menu for the Omarchy Phone (terminal version).
+#
+# Omarchy's own `omarchy-menu` asks the desktop QuickShell (omarchy-shell) to
+# open its menu plugin; the phone runs the Omarchy Phone shell instead, which
+# can't host that plugin, and a second QuickShell costs too much RAM. This
+# reads the same menu definition (Omarchy's default/omarchy/omarchy-menu.jsonc,
+# MIT, (c) David Heinemeier Hansson) and shows it with fzf in a foot window.
+#
+#   omarchy-menu [toggle|summon] [route]    open at route (default: root)
+#   omarchy-menu close                      close an open menu window
+#
+# Which rows show: only the ids listed in the phone overlay
+# ($OMARCHY_CORE/omarchy-menu.phone.jsonc). An empty object there keeps
+# Omarchy's row as is; fields override it; new ids add phone-only rows.
+# The user's ~/.config/omarchy/extensions/omarchy-menu.jsonc applies last,
+# same format as on the desktop (rows added there always show).
+import json, os, re, subprocess, sys
+
+OMARCHY_PATH = os.environ.get("OMARCHY_PATH", "/usr/share/omarchy")
+CORE = os.environ.get("OMARCHY_CORE", "/usr/share/omarchy-core")
+APP_ID = "omarchy-menu"
+
+
+def jsonc(path):
+    """JSONC -> dict: drop // and /* */ comments outside strings, trailing commas."""
+    try:
+        src = open(path, encoding="utf-8").read()
+    except OSError:
+        return {}
+    out, i, n, in_str = [], 0, len(src), False
+    while i < n:
+        c = src[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(src[i + 1]); i += 1
+            elif c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True; out.append(c)
+        elif src.startswith("//", i):
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        elif src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        else:
+            out.append(c)
+        i += 1
+    text = re.sub(r",(\s*[}\]])", r"\1", "".join(out))
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        print(f"omarchy-menu: {path}: {e}", file=sys.stderr)
+        return {}
+
+
+def load():
+    base = jsonc(f"{OMARCHY_PATH}/default/omarchy/omarchy-menu.jsonc")
+    phone = jsonc(f"{CORE}/omarchy-menu.phone.jsonc")
+    items = {}
+    for k, over in phone.items():
+        if over is None:
+            continue
+        row = dict(base.get(k, {}))
+        row.update(over)
+        items[k] = {f: v for f, v in row.items() if v is not None}
+    user = jsonc(os.path.expanduser("~/.config/omarchy/extensions/omarchy-menu.jsonc"))
+    for k, over in user.items():
+        if over is None:
+            items.pop(k, None)
+        else:
+            items.setdefault(k, dict(base.get(k, {}))).update(over)
+    return items
+
+
+def sh_ok(cond):
+    return subprocess.run(["bash", "-c", cond], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL).returncode == 0
+
+
+def route_of(items, name):
+    if name in ("", "root") or name in items:
+        return "" if name == "root" else name
+    for k, v in items.items():
+        if name in v.get("aliases", []):
+            return k
+    return ""
+
+
+def children(items, parent):
+    depth = parent.count(".") + 1 if parent else 0
+    for k, v in items.items():
+        if k.count(".") != depth or (parent and not k.startswith(parent + ".")):
+            continue
+        if "when" in v and not sh_ok(v["when"]):
+            continue
+        # Rows that need a runtime provider only the desktop shell has.
+        if "provider" in v and "action" not in v:
+            continue
+        if not ("action" in v or "target" in v or any(c.startswith(k + ".") for c in items)):
+            continue
+        yield k, v
+
+
+def pick(title, rows):
+    """rows: [(key, text)] -> key, or None on Esc."""
+    lines = "\n".join(f"{k}\t{t}" for k, t in rows)
+    r = subprocess.run(
+        ["fzf", "--delimiter=\t", "--with-nth=2..", "--no-sort", "--layout=reverse",
+         "--info=hidden", "--no-multi", "--cycle", f"--header={title}",
+         "--prompt=  ", "--pointer=▌", "--color=16"],
+        input=lines, stdout=subprocess.PIPE, text=True)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    return r.stdout.split("\t", 1)[0]
+
+
+def run_menu(start):
+    items = load()
+    stack = [route_of(items, start)]
+    while stack:
+        cur = stack[-1]
+        v = items.get(cur, {})
+        if cur and "action" in v:
+            stack.pop()
+            rc = subprocess.run(["bash", "-c", v["action"]]).returncode
+            if rc not in (0, 1, 130):   # 1/130: a picker inside the action was dismissed
+                input(f"\n[{v.get('label', cur)} exited {rc}] Enter to close ")
+            return
+        if cur and "target" in v:
+            stack[-1] = route_of(items, v["target"])
+            continue
+        rows = []
+        for k, c in children(items, cur):
+            mark = "  ✓" if "checked" in c and sh_ok(c["checked"]) else ""
+            more = "" if "action" in c else "  ›"
+            rows.append((k, f"{c.get('icon', ' ')}  {c.get('label', k)}{mark}{more}"))
+        title = v.get("title") or v.get("label") or "Omarchy"
+        if not rows:
+            print(f"omarchy-menu: nothing to show under '{cur or 'root'}'", file=sys.stderr)
+            return
+        choice = pick(title + ("" if cur else "  (Esc closes)"), rows)
+        if choice is None:
+            stack.pop()
+        else:
+            stack.append(choice)
+
+
+def main():
+    args = sys.argv[1:]
+    verb = args[0] if args else "toggle"
+    if verb in ("-h", "--help", "help"):
+        for line in open(__file__).read().splitlines()[1:]:
+            if not line.startswith("#"):
+                break
+            print(line[2:])
+        return
+    if verb in ("toggle", "summon", "close"):
+        args = args[1:]
+    else:
+        verb = "summon"
+    route = args[0] if args else "root"
+    if not os.isatty(0) or verb == "close":
+        # Launched from a key binding: one menu window at a time.
+        running = subprocess.run(["pkill", "-f", f"^foot --app-id={APP_ID} --title=Omarchy "]).returncode == 0
+        if verb == "close" or (verb == "toggle" and running):
+            return
+        font = os.environ.get("OMARCHY_MENU_FONT", "JetBrainsMono Nerd Font:size=10")
+        os.execvp("foot", ["foot", f"--app-id={APP_ID}", "--title=Omarchy",
+                           f"--font={font}", os.path.abspath(__file__), "summon", route])
+    run_menu(route)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

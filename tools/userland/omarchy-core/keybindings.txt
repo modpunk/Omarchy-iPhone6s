@@ -1,0 +1,18 @@
+# Shown by omarchy-menu-keybindings (Learn > Keybindings). Phone shell keys
+# come from the Omarchy Phone shell's hypr/hyprland.lua; keep them in sync.
+SUPER + SPACE	Omarchy menu
+SUPER + ESCAPE	System menu (lock)
+SUPER + SHIFT + CTRL + SPACE	Theme picker
+SUPER + CTRL + C	Capture menu (screenshot)
+SUPER + CTRL + O	Toggle menu (silent mode)
+SUPER + H	Home
+SUPER + TAB	App switcher
+SUPER + L	Lock
+SUPER + K	On-screen keyboard
+SUPER + RETURN	Terminal (foot)
+SUPER + W	Close window
+Home button	Home
+Power button	Lock + screen off (hold: power menu)
+Volume up / down	Volume
+Ring/silent switch	Silent mode
+Esc (in the menu)	Back / close

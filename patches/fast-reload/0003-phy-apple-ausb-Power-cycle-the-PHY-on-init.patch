@@ -1,0 +1,39 @@
+From 1fd6c119c0b2b279302138eeaf3126dabcebc07c Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 18:08:48 -0500
+Subject: [PATCH 3/3] phy: apple: ausb: Power-cycle the PHY on init
+
+init only asserted reset and released PWRDOWN/SIDDQ, so a PHY left
+running by the previous owner (iBoot, m1n1, or a kernel before kexec)
+was never fully powered down first. Drop the forced VBUS detect, put
+the PHY into reset with PWRDOWN|SIDDQ set, then release it as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/phy/apple/ausb.c | 9 +++++++--
+ 1 file changed, 7 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/phy/apple/ausb.c b/drivers/phy/apple/ausb.c
+index 39ba39d83377..0fd7c9c01ace 100644
+--- a/drivers/phy/apple/ausb.c
++++ b/drivers/phy/apple/ausb.c
+@@ -102,9 +102,14 @@ static int ausb_phy_usb2_power_on(struct phy *phy)
+ 	writel(aphy->cfg0_device, aphy->base + AUSB_CFG0);
+ 	writel(aphy->cfg1_device, aphy->base + AUSB_CFG1);
+ 
+-	set32(aphy->base + AUSB_CTL, AUSB_CTL_RESET);
++	/*
++	 * Start from a powered-down PHY whatever the previous owner (iBoot,
++	 * m1n1, or the kernel before a kexec) left behind, then release it.
++	 */
++	clear32(aphy->base + AUSB_SIG, AUSB_SIG_VBUSDET_FORCE_EN);
++	set32(aphy->base + AUSB_CTL, AUSB_CTL_RESET | AUSB_CTL_PWRDOWN | AUSB_CTL_SIDDQ);
+ 	udelay(20);
+-	clear32(aphy->base, AUSB_CTL_PWRDOWN | AUSB_CTL_SIDDQ);
++	clear32(aphy->base + AUSB_CTL, AUSB_CTL_PWRDOWN | AUSB_CTL_SIDDQ);
+ 	udelay(20);
+ 	clear32(aphy->base + AUSB_CTL, AUSB_CTL_RESET);
+ 	udelay(1500);
+-- 
+2.55.0
+

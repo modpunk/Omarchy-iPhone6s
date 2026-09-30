@@ -1,0 +1,6 @@
+#!/bin/bash
+# omarchy:summary=Show the phone keybindings
+# Phone version of Omarchy's omarchy-menu-keybindings: the phone session's
+# bindings (Omarchy Phone shell + this image's Omarchy keys), searchable.
+f="${OMARCHY_CORE:-/usr/share/omarchy-core}/keybindings.txt"
+grep -v '^#' "$f" | omarchy-menu-select Keybindings >/dev/null || true

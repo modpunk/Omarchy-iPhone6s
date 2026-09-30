@@ -1,0 +1,24 @@
+# Omarchy scripts (from $OMARCHY_SRC/bin) the omarchy-core stage installs to
+# /usr/share/omarchy/bin, unchanged. Everything else in Omarchy's bin/ drives
+# omarchy-shell, packages, x86 hardware, or apps the phone doesn't have.
+omarchy                          # dispatcher: `omarchy theme set ...`
+omarchy-theme-set
+omarchy-theme-set-templates
+omarchy-theme-set-foot
+omarchy-theme-set-tmux
+omarchy-theme-osc
+omarchy-theme-color
+omarchy-theme-list
+omarchy-theme-current
+omarchy-theme-dir
+omarchy-theme-colors-from-alacritty
+omarchy-restart-terminal
+omarchy-restart-btop
+omarchy-hook
+omarchy-notification-send
+omarchy-cmd-present
+omarchy-cmd-missing
+omarchy-menu-timezone
+omarchy-font-list
+omarchy-font-current
+omarchy-font-set

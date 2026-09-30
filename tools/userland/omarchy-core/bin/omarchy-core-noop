@@ -1,0 +1,8 @@
+#!/bin/bash
+# omarchy:hidden=true
+# Stand-in for Omarchy helpers that retint desktop apps the phone doesn't have
+# (browser policy, VS Code, Obsidian, pi, Claude, RGB keyboards) or refresh
+# desktop-only state (theme picker previews, background cache, hyprctl
+# reload: the phone session has no borders to recolour). omarchy-theme-set
+# runs them after every theme change; here they succeed and do nothing.
+exit 0

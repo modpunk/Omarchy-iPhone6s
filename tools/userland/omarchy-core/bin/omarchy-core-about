@@ -1,0 +1,13 @@
+#!/bin/bash
+# About this phone (stands in for Omarchy's omarchy-launch-about, which needs
+# fastfetch and a floating terminal).
+clear
+[[ -f ${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt ]] && cat "${OMARCHY_PATH:-/usr/share/omarchy}/logo.txt"
+echo
+echo "Omarchy $(omarchy-version) (themes, menu and scripts; Omarchy Phone shell on top)"
+echo "Theme: $(omarchy-theme-current)"
+[[ -r /etc/omarchy-phone-release ]] && cat /etc/omarchy-phone-release
+echo "Kernel: $(uname -r)   Memory: $(free -m | awk '/^Mem:/ {print $7 " MB available of " $2}')"
+echo
+echo "Omarchy is MIT licensed, (c) David Heinemeier Hansson: /usr/share/licenses/omarchy/LICENSE"
+read -rsn1 -p "Any key closes" || true
