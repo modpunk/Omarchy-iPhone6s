@@ -1,0 +1,368 @@
+name: Patch series CI
+
+# Build-only verification of the out-of-tree kernel patch series in patches/.
+# This workflow never touches a phone: it only proves the series apply cleanly
+# (and, best-effort, that they build) against the pinned HoolockLinux/linux base.
+on:
+  push:
+    paths:
+      - "patches/**"
+      - ".github/workflows/patch-series-ci.yml"
+  pull_request:
+    paths:
+      - "patches/**"
+      - ".github/workflows/patch-series-ci.yml"
+  workflow_dispatch: {}
+
+env:
+  # docs/CONTRIBUTING.md: all series are git-format-patch output against this
+  # HoolockLinux/linux commit. Pin the full SHA so a force-push upstream can't
+  # silently change what CI checks against.
+  HOOLOCK_REPO: https://github.com/HoolockLinux/linux.git
+  HOOLOCK_BASE_SHA: 6831bc701a6ce059e71e5aaa9488c9195bea6927
+
+jobs:
+  # Hard gate: docs/CONTRIBUTING.md ("Never commit") says no Apple/Broadcom
+  # binaries or build output in any patch, ever. A git-format-patch series
+  # embeds new files as literal diff text, so a smuggled blob shows up as a
+  # base85 "GIT binary patch" hunk or as a diff touching a disallowed path.
+  guard-no-blobs:
+    name: Guard against binary/firmware blobs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan patches for binary hunks and disallowed paths
+        run: |
+          set -euo pipefail
+          fail=0
+
+          echo "== Checking for 'GIT binary patch' hunks =="
+          if grep -rlZ 'GIT binary patch' patches/ 2>/dev/null | tr '\0' '\n' | grep -q .; then
+            echo "::error::Binary diff hunk(s) found in patches/ (git format-patch never emits these for the kernel's normal diff mode; something was added as a binary blob):"
+            grep -rlZ 'GIT binary patch' patches/ | tr '\0' '\n' | sed 's/^/  /'
+            fail=1
+          fi
+
+          echo "== Checking for disallowed file paths touched by any patch =="
+          # Mirror docs/CONTRIBUTING.md's "Never commit" list. Anchored on
+          # extension/basename, not on directory names -- driver source for
+          # e.g. brcmfmac or drivers/firmware/ is legitimate kernel C code,
+          # not a blob, and must not trip this guard.
+          disallowed_regex='\.(ipsw|im4p|dmg|hcd|bin|clm_blob|dtb|dtbo|ko|o)$|\.txt\.nvram$|-apple-dt\.bin$|(^|/)kc\.bin$|(^|/)Image(\.gz|\.lz4|\.zst)?$'
+          bad_paths=""
+          while IFS= read -r -d '' f; do
+            # `diff --git a/<path> b/<path>` lines name every file a patch touches or adds.
+            paths=$(grep -oP '^diff --git a/\K[^ ]+(?= b/)' "$f" || true)
+            for p in $paths; do
+              if echo "$p" | grep -Eq "$disallowed_regex"; then
+                bad_paths="${bad_paths}${f}: ${p}\n"
+              fi
+            done
+          done < <(find patches -name '*.patch' -print0)
+
+          if [ -n "$bad_paths" ]; then
+            echo "::error::Patch(es) touch a path CONTRIBUTING.md says never to commit:"
+            printf "%b" "$bad_paths" | sed 's/^/  /'
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            echo "See docs/CONTRIBUTING.md#never-commit. Commit the extraction script instead of the blob."
+            exit 1
+          fi
+          echo "OK: no binary hunks, no disallowed paths in patches/."
+
+  # Hard gate: every documented series must git-am cleanly onto the pinned
+  # HoolockLinux commit, applying its declared prerequisite series first.
+  # Also emits the SERIES list as a matrix for build-check, so the
+  # name:deps config below is the one and only place it's maintained.
+  apply-check:
+    name: git am apply check
+    needs: guard-no-blobs
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.applycheck.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Fetch pinned HoolockLinux/linux base commit (shallow)
+        run: |
+          set -euo pipefail
+          mkdir -p hoolock-linux
+          cd hoolock-linux
+          git init -q
+          git remote add origin "$HOOLOCK_REPO"
+          git config user.email "ci@omarchy-iphone6s.invalid"
+          git config user.name "Patch series CI"
+          # Shallow-fetch the exact pinned commit; GitHub allows fetching by
+          # SHA even when it isn't a branch tip.
+          git fetch --depth=1 origin "$HOOLOCK_BASE_SHA"
+          git checkout -q --detach FETCH_HEAD
+          echo "Base tree at: $(git rev-parse HEAD)"
+
+      - name: git am each series in dependency order
+        id: applycheck
+        run: |
+          set -euo pipefail
+          cd hoolock-linux
+          REPO_PATCHES="$GITHUB_WORKSPACE/repo/patches"
+
+          # ---- series order & dependencies -----------------------------------
+          # Maintained by hand from docs/drivers/*.md "Depends on" notes:
+          #   - foundation:  standalone (docs/drivers/foundation.md) -- adds the
+          #                  serial1/serial3..serial6 DT nodes and PMIC fixes.
+          #   - battery:     depends on foundation (docs/drivers/battery.md:
+          #                  needs the serial5 node from foundation/0001).
+          #   - bluetooth:   depends on foundation (docs/drivers/bluetooth.md:
+          #                  needs the serial1 node from foundation/0001).
+          #   - touch:       standalone (docs/drivers/touch.md: "6 patches,
+          #                  git am onto 6831bc701 on their own, checked";
+          #                  it adds its own SPI controller nodes).
+          #   - fast-reload: standalone (docs/fast-reload.md: no dependency
+          #                  note; smp_spin_table change only).
+          # Each entry is "name:comma,separated,deps" (deps may be empty).
+          SERIES=(
+            "foundation:"
+            "battery:foundation"
+            "bluetooth:foundation"
+            "touch:"
+            "fast-reload:"
+          )
+          # ---------------------------------------------------------------------
+
+          echo "== Emitting SERIES as a JSON matrix for build-check =="
+          matrix_json=$(
+            printf '%s\n' "${SERIES[@]}" \
+              | jq -R -c 'split(":") as $p | {name: $p[0], deps: ($p[1] // "")}' \
+              | jq -c -s '{include: .}'
+          )
+          echo "matrix=$matrix_json" >> "$GITHUB_OUTPUT"
+          echo "$matrix_json"
+
+          echo "== Checking SERIES above covers every patches/*/ directory =="
+          unlisted=()
+          for d in "$REPO_PATCHES"/*/; do
+            dname="$(basename "$d")"
+            listed=0
+            for entry in "${SERIES[@]}"; do
+              [ "${entry%%:*}" = "$dname" ] && listed=1 && break
+            done
+            [ "$listed" -eq 1 ] || unlisted+=("$dname")
+          done
+          if [ "${#unlisted[@]}" -ne 0 ]; then
+            echo "::error::patches/ has series not listed in this workflow's SERIES array: ${unlisted[*]}"
+            echo "Add each one to SERIES in .github/workflows/patch-series-ci.yml (with its dependency notes from docs/drivers/<name>.md) so it's actually checked."
+            exit 1
+          fi
+
+          failures=()
+          summary=()
+
+          for entry in "${SERIES[@]}"; do
+            name="${entry%%:*}"
+            deps_csv="${entry#*:}"
+            series_dir="$REPO_PATCHES/$name"
+
+            if [ ! -d "$series_dir" ]; then
+              echo "::warning::No patches/$name directory found, skipping (update SERIES in this workflow if it moved)."
+              continue
+            fi
+
+            echo "::group::$name (deps: ${deps_csv:-none})"
+            git am --abort >/dev/null 2>&1 || true
+            # Detached checkout of the immutable pinned SHA -- checking out a
+            # branch here would let `git am` advance that branch ref across
+            # iterations, silently stacking series on top of each other.
+            git checkout -q --detach "$HOOLOCK_BASE_SHA"
+            git reset --hard -q "$HOOLOCK_BASE_SHA"
+            git clean -fdx -q
+
+            ok=1
+            if [ -n "$deps_csv" ]; then
+              IFS=',' read -ra deps <<< "$deps_csv"
+              for dep in "${deps[@]}"; do
+                dep_dir="$REPO_PATCHES/$dep"
+                echo "-- applying prerequisite series: $dep --"
+                if ! git am "$dep_dir"/*.patch; then
+                  echo "::error::Prerequisite series '$dep' (needed by '$name') failed to apply."
+                  git am --abort >/dev/null 2>&1 || true
+                  ok=0
+                fi
+              done
+            fi
+
+            if [ "$ok" -eq 1 ]; then
+              echo "-- applying series: $name --"
+              if git am "$series_dir"/*.patch; then
+                echo "OK: $name applied cleanly (with deps: ${deps_csv:-none})."
+                summary+=("PASS  $name  (deps: ${deps_csv:-none})")
+              else
+                echo "::error::Series '$name' failed to git am cleanly onto base + [${deps_csv}]."
+                git am --abort >/dev/null 2>&1 || true
+                ok=0
+              fi
+            fi
+
+            if [ "$ok" -ne 1 ]; then
+              failures+=("$name")
+              summary+=("FAIL  $name  (deps: ${deps_csv:-none})")
+            fi
+            echo "::endgroup::"
+          done
+
+          echo
+          echo "== Apply-order summary =="
+          printf '%s\n' "${summary[@]}"
+
+          if [ "${#failures[@]}" -ne 0 ]; then
+            echo
+            echo "::error::Series that failed to apply: ${failures[*]}"
+            exit 1
+          fi
+
+  # Lightweight style check on every patch. Runs once, independent of the
+  # build matrix below. Never blocks: docs/CONTRIBUTING.md asks for
+  # checkpatch-clean "where reasonable", not a hard requirement.
+  checkpatch:
+    name: checkpatch.pl (style only)
+    needs: guard-no-blobs
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Fetch pinned HoolockLinux/linux base commit (shallow)
+        run: |
+          set -euo pipefail
+          mkdir -p hoolock-linux
+          cd hoolock-linux
+          git init -q
+          git remote add origin "$HOOLOCK_REPO"
+          git fetch --depth=1 origin "$HOOLOCK_BASE_SHA"
+          git checkout -q --detach FETCH_HEAD
+
+      - name: checkpatch.pl on every patch
+        run: |
+          set -uo pipefail
+          cd hoolock-linux
+          if [ ! -x scripts/checkpatch.pl ]; then
+            echo "::warning::scripts/checkpatch.pl not present in the fetched tree, skipping style check."
+            exit 0
+          fi
+          status=0
+          for p in $(find "$GITHUB_WORKSPACE/repo/patches" -name '*.patch' | sort); do
+            echo "::group::checkpatch: ${p#"$GITHUB_WORKSPACE/repo/"}"
+            perl scripts/checkpatch.pl --strict "$p" || status=$?
+            echo "::endgroup::"
+          done
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::checkpatch.pl reported issues above (non-blocking; CONTRIBUTING.md asks for 'clean where reasonable', not a hard gate)."
+          fi
+
+  # Best-effort: build each series *in the same isolation apply-check used*
+  # (base + its own declared deps only -- never stacked with sibling
+  # series). Sibling series are not guaranteed to coexist in one tree: e.g.
+  # battery and bluetooth both patch arch/arm64/boot/dts/apple/s800x-6s.dtsi
+  # and conflict with each other despite each applying cleanly on its own,
+  # which a combined-stack build would have hidden or misreported. Skips
+  # gracefully, per matrix entry, if the toolchain or disk space isn't there.
+  build-check:
+    name: Build (${{ matrix.name }})
+    needs: apply-check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.apply-check.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: repo
+
+      - name: Fetch pinned HoolockLinux/linux base commit (shallow)
+        run: |
+          set -euo pipefail
+          mkdir -p hoolock-linux
+          cd hoolock-linux
+          git init -q
+          git remote add origin "$HOOLOCK_REPO"
+          git config user.email "ci@omarchy-iphone6s.invalid"
+          git config user.name "Patch series CI"
+          git fetch --depth=1 origin "$HOOLOCK_BASE_SHA"
+          git checkout -q --detach FETCH_HEAD
+
+      - name: "git am ${{ matrix.name }} (with its deps: ${{ matrix.deps }})"
+        run: |
+          set -euo pipefail
+          cd hoolock-linux
+          REPO_PATCHES="$GITHUB_WORKSPACE/repo/patches"
+          deps_csv="${{ matrix.deps }}"
+          if [ -n "$deps_csv" ]; then
+            IFS=',' read -ra deps <<< "$deps_csv"
+            for dep in "${deps[@]}"; do
+              git am "$REPO_PATCHES/$dep"/*.patch
+            done
+          fi
+          git am "$REPO_PATCHES/${{ matrix.name }}"/*.patch
+
+      - name: Check disk space and toolchain before attempting a build
+        id: preflight
+        run: |
+          set -uo pipefail
+          avail_kb=$(df -Pk . | awk 'NR==2{print $4}')
+          echo "Available disk: $((avail_kb / 1024)) MiB"
+          # A LLVM=1 arm64 defconfig build + object files needs a few GB of
+          # scratch space; bail out early rather than fail messily mid-build.
+          if [ "$avail_kb" -lt 6000000 ]; then
+            echo "::warning::Less than ~6 GiB free, skipping the build step."
+            echo "can_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! { sudo apt-get update -qq && sudo apt-get install -y -qq clang lld llvm libelf-dev flex bison bc libssl-dev; } >/tmp/apt.log 2>&1; then
+            echo "::warning::Could not install the clang/LLVM toolchain, skipping the build step. See /tmp/apt.log."
+            echo "can_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! command -v clang >/dev/null 2>&1; then
+            echo "::warning::clang not on PATH after install attempt, skipping the build step."
+            echo "can_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "can_build=true" >> "$GITHUB_OUTPUT"
+
+      - name: make ARCH=arm64 LLVM=1 defconfig + targeted build
+        if: steps.preflight.outputs.can_build == 'true'
+        run: |
+          set -euo pipefail
+          cd hoolock-linux
+          make ARCH=arm64 LLVM=1 defconfig
+          # Build just the object files this series (+ its deps) touch,
+          # instead of a full Image: enough to prove the code compiles
+          # under this config without an unrelated full kernel build.
+          mapfile -t objs < <(
+            git diff --name-only "$HOOLOCK_BASE_SHA" HEAD -- '*.c' \
+              | sed -E 's/\.c$/.o/' \
+              | grep -v '^scripts/' || true
+          )
+          if [ "${#objs[@]}" -eq 0 ]; then
+            echo "No changed .c files (DT-only / binding-only series)."
+          else
+            echo "Building: ${objs[*]}"
+            make ARCH=arm64 LLVM=1 "${objs[@]}"
+          fi
+          # Always build the n71/n71m dtbs too: a series can git-am cleanly
+          # and still fail to *build* once its dependency's DT nodes are in
+          # place (docs/drivers/battery.md: "the dtb only builds once
+          # serial5 exists").
+          echo "Building n71/n71m dtbs"
+          make ARCH=arm64 LLVM=1 \
+            apple/s8000-n71.dtb apple/s8003-n71m.dtb
+
+      - name: Build step skipped
+        if: steps.preflight.outputs.can_build != 'true'
+        run: echo "Build step was skipped for ${{ matrix.name }} (see the preflight step above). The apply-check job is still the required gate."
