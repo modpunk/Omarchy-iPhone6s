@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-2.0 OR MIT
+/dts-v1/;
+/plugin/;
+/*
+ * OPTIONAL live-test overlay: the touch reference clock as a real clock
+ * provider (clk_apple_touch_v1.ko) and a consumer link from the existing
+ * touchscreen@0 node, so apple_z2_n2 enables the clock itself.
+ *
+ * Only apply after touch_clk_t1 showed the register fits the layout and the
+ * owner approved the clock write (the driver writes the same values).
+ * Apply ONCE and never remove it (it adds a clock provider, rule 11).
+ *
+ * Raw phandle: clkref = 0x05 (testkit/CONTEXT.md). Check first:
+ *   hexdump -C /proc/device-tree/clock-ref/phandle
+ */
+/ {
+	fragment@0 {
+		target-path = "/soc/power-management@20e000000";
+		__overlay__ {
+			touch_clk_v1: clock-controller@78000 {
+				compatible = "apple,s8000-touch-clock";
+				reg = <0x78000 0x8>;
+				#clock-cells = <0>;
+				clocks = <0x05>;
+				clock-frequency = <32768>;
+				clock-output-names = "touch_ref";
+			};
+		};
+	};
+
+	fragment@1 {
+		target-path = "/soc/spi@20a088000/touchscreen@0";
+		__overlay__ {
+			clocks = <&touch_clk_v1>;
+		};
+	};
+};

@@ -1,9 +1,8 @@
 # Touch (iPhone 6s N71 multitouch on spi2)
 
-**Status:** partial (build-verified; dt_binding_check and dtbs_check clean for n71/n71m/n66 with dtschema 2026.9). The SPI controller driver, DT and apple_z2 iPhone variant are written and
-build clean (W=1, dtbs). **Nothing has run on the phone yet.** The one overlay attempt hung
-because the kernel was already wedged by an unrelated overlay-remove oops, and phone tests were
-paused. The protocol is identified from iOS static analysis. No touch events have been seen.
+**Status:** partial. The SPI driver runs on the phone (48 MHz reference), reset toggles and the
+touch analog supply is on, but the controller does not answer. The next suspect is the 32 kHz
+touch clock (see "Power and clock"). No touch events have been seen.
 
 Patches: `patches/touch/` (6 patches, `git am` onto `6831bc701` on their own, checked).
 
@@ -16,7 +15,8 @@ Patches: `patches/touch/` (6 patches, `git am` onto `6831bc701` on their own, ch
 | pins | SCK/MOSI/MISO = GPIO 41-43 (periph 1, set by iBoot, read from the live pin registers). CS = GPIO 44 (`function-spi_cs0`) |
 | reset / irq | reset = GPIO 75 (active low, iBoot leaves it asserted: pin reg 0x72202). irq = GPIO 142 (`interrupt-parent` is the GPIO controller, not AIC) |
 | SPI mode | ADT reg `00000000 7c000000 01 03 01 08 ...`: 124 ns period (about 8 MHz), CPOL=1, CPHA=1, MSB first, 8 bit |
-| power | `function-power_ldo` = D2255 LDO index 0x19 ("ldo26", enable reg 0x319 bit0): **ON** (read 0x01 live). `function-power_ana` = Chestnut display PMU (i2c0 0x27) reg 0x05 bit4: **OFF** (read 0x0f live). `function-clock_enable` = PMGR `TCLK` 8/100/0x8000 (not decoded) |
+| power | `function-power_ldo` = D2255 output 0x19 (pmuL 0x219, enable reg 0x319 bit0): **ON** (read 0x01 live). `function-power_ana` = Chestnut display PMU (i2c0 0x27, dpLE 0x302) reg 0x05 bit4: off at boot (0x0f), set to 0x1f live on 2026-09-29 |
+| clock | `function-clock_enable` = PMGR `TCLK` (8, 100, 0x8000): a **32768 Hz** reference; PMGR `clocks` entry 8 is "LPO". Not enabled by Linux. See "Power and clock" |
 
 ## SPI controller (A9 is not the M1 block)
 
@@ -32,8 +32,8 @@ meaning there is inverted compared with iOS.
 
 New driver `drivers/spi/spi-apple-s5l.c` (`apple,s8000-spi`, `apple,s5l-spi`): polled PIO,
 programmed in the same order as iOS. Runtime PM is deliberately off so SCK keeps its idle level.
-The ref clock is assumed to be clkref (24 MHz); iOS uses a PMGR "nclk" whose rate I could not
-find. The live probe measures the real SCK rate.
+The ref clock is 48 MHz (measured live from SCK for a known divider; commit 70a84a98dd65 on
+6s/touch-fixes adds a fixed `clk_spi_ref`).
 
 DT: `spi1/spi2/spi3` nodes after the i2c nodes in `s800-0-3.dtsi` (disabled). spi2 is enabled
 in `s800x-6s.dtsi` with `cs-gpios`. The touchscreen node is in `s8000-n71.dts` and
@@ -84,23 +84,91 @@ coordinate range are unverified. The analog rail is off.
 - `tools/touch/adt-touch-cal.py <runtime-adt>` prints `apple,z2-cal-blob` from the runtime ADT
   (`/dev/mtd1ro`, 1024 bytes, device unique). The IPSW ADT only has the syscfg placeholder.
 
-## Live-test plan (after reboot; nothing below has run yet)
+## Power and clock (2026-09-29)
 
-1. Confirm `ps_spi2` phandle 0xf039 (fnd_phandle). Load `tools/touch/live-test/ttpwr_v1.c`
-   (read-only rail report plus spi2 domain), then `tspis_v1` (the S5L driver).
-2. Apply `testkit/overlays/touch-spi2-v1.dtso` **once and never remove it**. It adds spi2 and a
-   `hoolock,z2probe-v1` child. Expect `S5L SPI controller, ref clock 24000000 Hz`.
-3. Load `tz2probe_v1`. It logs: irq level; 1 KiB timing (actual SCK); dummy transfer; reset
-   deassert plus irq edges; 3 HBPP checks (expect `IN HBPP`, words like `18e1/1aa1/...`);
-   ATN_ACK; read-only reads of 0x10008ffc (N1 version) and 0x10003800. Reset is re-asserted at
-   the end. A version value is the "controller is talking" proof.
-4. Only then: enable the Chestnut touch analog LDO (reg 0x05 |= 0x10, what iOS does). That is a
-   display-PMU write and needs the human or coordinator's OK. Next, bind `apple,n71-multitouch`
-   (new overlay child with the cal blob, firmware pushed) and run `evtest`.
-5. Human touch test: on `/dev/input/eventN` ("iPhone 6s Touchscreen"), touch and drag one
-   finger in each corner, then two fingers. Check that ABS_MT_POSITION_X/Y change, the range
-   and orientation (it may be inverted or scaled against 750x1334), and that BTN_TOUCH/slot
-   release on lift.
+Live state before this section: 48 MHz SPI works, reset (GPIO 75) toggles, Chestnut 0x05 = 0x1f
+(touch analog on, read back), D2255 0x319 = 0x01. The controller still returns all zeros on MISO
+(pad 43 has a pull-down, so "nobody drives it") and the IRQ pad (142, pulled up) stays low.
+
+**The D2255 "voltage code 0" idea does not hold.** In the p1 survey about 22 outputs that are on
+(0x3xx non-zero, e.g. 0x302, 0x303, 0x30b, 0x30c Touch ID, 0x312-0x321) read 0x00 at 0x2xx,
+and two outputs that are off (0x306, 0x311) read non-zero there. The phone runs on those rails,
+so 0x2xx is not a per-output voltage where 0 means 0 V; the touch output is in the same state
+as most of what iBoot left on. Corellium's GPL iPhone 7 kernel (`hx-h9p-d10.dts`) describes the
+same pair of touch supplies as pure on/off switches: `touch_pwrsw` = PMU 0x31f bit0 and
+`touch_ldo` = Chestnut 0x05 mask 0x10, with no voltage programming. **No D2255 voltage write is
+proposed.** No public source gives the D2255 voltage encoding.
+
+**What is missing is the 32 kHz touch clock.** The Apple DT asks for it (`TCLK`, 0x8000 =
+32768 Hz) and the N1 boot writes `clk32-clock-enable`; the FLL value 6099 x 32768 Hz = 199.9 MHz
+also points at a 32 kHz reference. Linux never enables it. On A10 (same SPI2 address, same
+Chestnut/PMU touch rails) Corellium's `clk-hx-pmgr.c` drives it through one PMGR register at
+0x2_0e07_8000: bit31 DISABLE, bit19 ENABLE, bit18 BUSY, bits 9:0 divider from 24 MHz (732 for
+32768 Hz). That offset is inside the A9 PMGR range from the Apple DT, but it is **not confirmed on
+A9** (the A9 and A10 PMGR power-state tables are similar, not identical: spi2 is 0x801c8 on A9 and
+0x801d8 on A10). Hence the read-first plan below.
+
+Power-on order (Corellium, iPhone 7): reset low, analog (Chestnut) on, 2-5 ms, core (PMU) on,
+2-5 ms, CS high, clock on, 1-2 ms, then reset release / firmware. apple_z2 now does the same.
+
+Kernel (branch `6s/touch-next`, local): `apple,pmu-switch` regulator driver (children of the
+PMIC and of the new `apple,chestnut-pmu` simple-mfd-i2c node), `apple,s8000-touch-clock` clock
+driver (child of the PMGR syscon), apple_z2 `vdd-supply` / `avdd-supply` / `clocks` with the order
+above, DT CS delays 5000/10000 ns. All new DT nodes stay disabled until the clock is confirmed.
+The running kernel has `CONFIG_REGULATOR` off, so live tests switch rails with the approved
+one-bit writes and leave the supplies out of the DT.
+
+## Live-test plan (main session runs every step)
+
+Modules for the running (integration) kernel: `~/Work/hoolock-iphone5s/build/touch-next-mods-integ/`
+(`tclk/touch_clk_t1.ko`, `tclkdrv/clk_apple_touch_v1.ko`, `z2n2/apple_z2_n2.ko`); the same modules
+built against the base tree are in `build/touch-next-mods/`. Check `uname -a` / the vermagic
+first and use the set that matches.
+
+Read-only:
+
+1. `phone.sh ping`; `dmesg | tail`; check that the earlier touch modules and overlays are
+   still there (`ls /sys/bus/spi/devices/`, `cat /sys/bus/spi/devices/spi*/of_node/compatible`,
+   `readlink /sys/bus/spi/devices/spi*/driver`).
+2. `phone.sh insmod touch_clk_t1.ko` (no parameters, returns -ECANCELED). Record: the TCLK line,
+   `tclk+4`, D2255 0x219/0x319, Chestnut 0x05, pads.
+   - Fits the A10 layout if `unknown-bits 00000000`, and idle means `disable 1 enable 0`.
+   - `enable 1` with a divider near 732: the clock is already running; skip step 3 and go to
+     the reset-polarity fallback (touch_diag_d2 `reset_invert=1`, step 4).
+   - Unknown bits set, all zeros, or all ones: **stop**, the register is not the touch clock on
+     A9. Don't write. Report the value.
+
+Writes (each needs its own OK; one at a time; read back):
+
+3. TCLK enable, only if step 2 was idle and fit the layout:
+   `phone.sh insmod touch_clk_t1.ko enable=1 expect=0x<value from step 2>`.
+   The module refuses if the value changed. Check the `after` line: `disable 0 enable 1 busy 0
+   div 732`. Pads line printed 5 ms later: note pad 142.
+4. HBPP check with the clock on: touch_diag_d2 (still loaded, or reload `build/touch-diag/d2`)
+   `step=4 mode=3 speed_hz=1000000 cs_setup_ns=5000 cs_hold_ns=10000`, write `run`. The pass
+   mark is HBPP words in the RX (`18e1`, `1aa1`, `4bc1`, ...) and a non-zero N1 version at
+   0x10008ffc. If it is still all zeros: restore the clock
+   (`touch_clk_t1.ko restore=1 expect=<step-2 value>`) and try `reset_invert=1` once.
+5. Only if step 4 passed: firmware and driver. Push `firmware/touch/apple/mtfw-n71.bin` (84092 B,
+   local, never committed) to `/lib/firmware/apple/`. The touchscreen@0 node needs the
+   compatible `apple,n71-multitouch`, `interrupts-extended` on GPIO 142 falling edge, and the
+   calibration blob (`tools/touch/adt-touch-cal.py` on the runtime ADT). The main session's
+   `touch-live.dtso` from 2026-09-29 already does most of this. Unbind the current driver,
+   `insmod apple_z2_n2.ko`, then bind `spi0.0` to `apple-z2-n2`. Expect
+   `bootloader version 0x...` and no ack errors. Optional: apply `touch-clk-v1.dtbo` and load
+   `clk_apple_touch_v1.ko` first, so the driver owns the clock (this writes the same register as
+   step 3).
+6. `evtest` on "iPhone 6s Touchscreen": should be silent with no finger.
+
+Human finger test:
+
+7. One finger in each corner (top-left, top-right, bottom-left, bottom-right), then the
+   centre, then a slow drag along each edge, then two fingers. Record the raw
+   ABS_MT_POSITION_X/Y at each corner, check BTN_TOUCH and slot release on lift.
+8. Fix the axes in the DT (kernel side, applies to every consumer): `touchscreen-size-x/-y` =
+   raw maxima, `touchscreen-inverted-x/-y` / `touchscreen-swapped-x-y` from the corner table.
+   Use the udev `LIBINPUT_CALIBRATION_MATRIX` rule (`tools/userland/overlay/etc/udev/rules.d/`)
+   only for an offset the DT can't express. Then start Hyprland (`phone-hyprland`) and tap foot.
 
 ## Provenance
 
@@ -117,7 +185,10 @@ coordinate range are unverified. The analog rail is off.
 | LDO index 0x19 -> reg 0x319, Chestnut select 2 -> reg 0x05 bit4 | iOS `AppleD2255PMU` LDO table and `AppleChestnutDisplayPMU::setLDO`, static disassembly |
 | `Z2Compliant`, N1 addresses (fll, ref-clk-div, clk32, cal-dl, prox-cal, fw-execute) | iOS kernelcache `__PRELINK_INFO`, `AppleMultitouchSPIN71` personality |
 | HBPP packet ids, ack codes, N1 boot order, MemRead/RegWrite/EXECUTE formats | iOS `AppleMultitouchSPI` kext (`MTSPIBootloader_Z2/_N1`, `AppleMultitouchZ2SPI`), static disassembly |
+| D2255 0x2xx/0x3xx pages, Chestnut 0x05 | live read-only survey `touch_power_p1` (2026-09-29) |
+| touch supplies as on/off switches (PMU 0x31f bit0, Chestnut 0x05 mask 0x10), power-on order, 32 kHz touch clock register layout at PMGR+0x78000 on A10 | Corellium `linux-sandcastle` (GPL): `hx-h9p-d10.dts`, `hx-pmu-i2c-pwrsw.c`, `hx-touch.c`, `clk-hx-pmgr.c` |
+| TCLK (8, 100, 0x8000), PMGR `clocks` entry 8 = "LPO" | runtime ADT, `/arm-io/spi2/multi-touch` and `/arm-io/pmgr` |
 | constructed firmware images, `PreconstructedBootloadPacketType=Z2`, version 0x0670.mihu | IPSW rootfs `/usr/share/firmware/multitouch/N71.mtprops` (checksums checked by the extractor) |
 | Z2FW container, touch bar packet layouts (0x3001 DATA, 0x1e33 RMW, 0x1f01), EB/E1 report read | Asahi `asahi_firmware/multitouch.py` and upstream `apple_z2.c` (public) |
 
-Nothing in this document comes from live SPI traffic yet.
+No touch report has been seen yet; the only live SPI traffic so far is all zeros.
