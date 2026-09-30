@@ -1,7 +1,9 @@
 # Fast kernel reload (kexec, no DFU)
 
-**Status**: built and checked offline (kernel builds, loader runs under qemu-user, DT merge
-checked on a synthetic m1n1 tree). **Not yet run on the phone.**
+**Status**: reloads started from the busybox ramdisk work on the phone (about 10 s, USB NCM comes
+back). A reload started from the Arch userland (2026-09-29) booted the new kernel but USB never
+enumerated again; see "Reloading from the Arch userland" for the fix, which is not yet
+tested on the phone.
 
 Without this, every new kernel costs a DFU cycle: buttons, checkm8, pongoOS, blob. With it:
 
@@ -62,7 +64,9 @@ What was evaluated:
    1. Probe the phone and pull `/sys/firmware/fdt` (hex over telnet, md5-checked).
    2. Merge, then push `kexec-lite`, the dtb, the initrd and the Image.
    3. Run `kexec_load`. The phone is still on the old kernel if this fails.
-   4. Jump, wait for telnet to drop and come back, then print `uname`, online CPUs and the park
+   4. Jump through `kit/fast-reload/kexec-jump.sh`: it detaches from the telnet session,
+      unbinds the configfs USB gadget, waits 2 s, then calls `kexec-lite exec`. reload.sh
+      waits for telnet to drop and come back, then prints `uname`, online CPUs and the park
       line from dmesg.
 
 ## One-time setup: one slow boot with the patch
@@ -101,11 +105,60 @@ make O=$BUILD LLVM=1 ARCH=arm64 KERNELRELEASE=7.3.0-rc1-g6831bc701a6c Image appl
 kit/reload.sh --build $BUILD                  # or BUILD=... kit/reload.sh
 kit/reload.sh -n                              # dry run: show the carried m1n1 delta + placement
 kit/reload.sh --append "loglevel=8"           # tweak bootargs (--cmdline replaces them)
-kit/reload.sh --load-only                     # kexec_load only; jump later with kexec-lite exec
+kit/reload.sh --load-only                     # kexec_load only; jump later with kexec-jump.sh
+kit/reload.sh --no-quiesce                    # jump with the USB gadget still bound (the old way)
 ```
 
 A reload is a reboot as far as runtime state goes: loaded modules, applied overlays and the
 `fnd_phandle` phandles are gone, so run `phone.sh settime` again. The ramdisk is fresh.
+
+## Reloading from the Arch userland
+
+The first reload from the RAM userland (systemd as PID 1, the ramdisk's gadget inherited across
+`switch_root`, telnetd and sshd running) booted the new kernel. The screen showed the ramdisk
+shell, but the laptop never saw a USB device again. The kexec'd DT was checked afterwards
+(`out/fast-reload/stage/fr.dtb`): the ausb tunables, `usbdev` and the power domains are all
+there, and the delta is the same as on the busybox reloads, so the DT is not the cause.
+
+What the old jump did: `reboot(LINUX_REBOOT_CMD_KEXEC)` with the gadget still bound. The only
+USB cleanup was dwc2's `.shutdown`: interrupts masked, PHY powered down (PWRDOWN|SIDDQ). There
+was no soft disconnect (SFTDISCON), no clock ungating after a bus suspend and no core reset, so
+the endpoints and their DMA stayed armed in the core. The new kernel's dwc2 probe only
+*deasserts* the pmgr reset. The DT has `resets = <&ps_usbotg>` but no `reset-names`, so dwc2
+never even got the reset. Whatever the old kernel left behind was inherited as it was.
+
+This is also true of the busybox reloads, so it doesn't explain on its own why only the
+userland failed. What exactly differed on the phone is still unproven, since the failed boot
+left no log. The fix closes every gap on both sides:
+
+- **kit** (`kexec-jump.sh`, used by `reload.sh`): writes `""` to every configfs gadget's `UDC`
+  before the jump. That is the gadget stack's own teardown (pull-up off, endpoints disabled,
+  `udc_stop` powers the PHY down), the same path the ramdisk init takes at every boot when it
+  adds ACM. It finds configfs through `/proc/mounts` (`/config` in the ramdisk,
+  `/sys/kernel/config` under systemd) and mounts it itself if neither is there. Under systemd it
+  runs as a transient unit (`fast-reload-jump-<pid>`), outside `phone-telnetd.service`'s cgroup,
+  so a telnetd restart can't kill it halfway with USB already gone. If `reboot(KEXEC)` returns,
+  it binds the UDC again so the phone stays reachable.
+- **kernel** (branch `6s/fast-reload-usb` of `hoolock-iphone5s/linux`, on top of `6s/fast-reload`;
+  `patches/fast-reload/0002-*` and `0003-*`; built in `build/fast-reload-usb`):
+  - dwc2 probe on `apple,dwc2` pulses the pmgr reset. The DT gains `reset-names = "dwc2"`, so the
+    core starts from its power-on state. `dwc2.apple_reset_on_probe=0` turns this off.
+  - Probe clears `PCGCTL` before the first register read, in case the previous kernel left the
+    core clock-gated.
+  - `.shutdown` in peripheral mode ungates the clocks, sets SFTDISCON, soft-resets the core,
+    then powers the PHY down.
+  - The ausb PHY `init` power-cycles the PHY (PWRDOWN|SIDDQ under reset) instead of only
+    releasing it.
+
+The kernel's `.shutdown` change only helps once the kernel you jump *from* has it. The probe
+changes help on the first reload *into* it.
+
+Rehearse the teardown without a kexec. USB drops for about 5 s, then telnet works again:
+
+```sh
+testkit/phone.sh push kit/fast-reload/kexec-jump.sh
+testkit/phone.sh lock 'sh /tmp/6s/kexec-jump.sh --rehearse'; sleep 10; testkit/phone.sh ping
+```
 
 ## Failure modes
 
@@ -114,9 +167,13 @@ A reload is a reboot as far as runtime state goes: loaded modules, applied overl
 - *`kexec_load failed (… 0x10)`* (EBUSY): same cause, or a CPU failed to come online at boot.
   Nothing has changed on the phone.
 - *nosmp / nr_cpus= on the running cmdline*: refused. CPU1 may still be in m1n1 memory.
-- *phone never comes back*: look at the screen (fbcon shows the new kernel's console). The
-  riskiest untested part is USB gadget (dwc2) and PHY re-init after a warm handover, because
-  iBoot set them up for the first kernel. Recover through DFU.
+- *phone never comes back*: look at the screen (fbcon shows the new kernel's console) and
+  photograph it before you DFU. Look for `No UDC found, skipping usb gadget` (dwc2 did not
+  probe), `dwc2 ...: HANG! Soft Reset timeout` or `AHB Idle timeout` (core wedged),
+  `Bad value for GSNPSID` (core unclocked or in reset), `controller reset failed` (pmgr reset),
+  and `Could not find an interface to run a dhcp server on`. Just before the jump the old kernel
+  prints `fast-reload: unbinding ...` and `fast-reload: reboot(KEXEC)` on the screen for about
+  2 s. Recover through DFU.
 - *wrong base* (e.g. a blob built by `~/Work/hoolock-iphone5s/boot.sh`, which does not record
   `blob-dtbs`): pass `--base <the dtb inside that blob>`. `-n` prints every carried change, so a
   bad base shows up as a long list of unrelated properties.
