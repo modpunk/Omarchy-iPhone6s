@@ -17,7 +17,15 @@ hl.config({
   misc = { force_default_wallpaper = 0, disable_hyprland_logo = true },
   xwayland = { enabled = false },
   cursor = { no_hardware_cursors = true },
-  input = { kb_layout = "us" },
+  -- Touch: apple_z2 registers "iPhone 6s Touchscreen" (INPUT_PROP_DIRECT),
+  -- so libinput maps it to the only output. Orientation and range are fixed
+  -- in the kernel DT (touchscreen-inverted-x/-y, touchscreen-swapped-x-y,
+  -- touchscreen-size-x/-y), not here; keep transform 0 unless the panel is
+  -- rotated with hl.monitor. Check with: hyprctl configerrors
+  input = {
+    kb_layout = "us",
+    touchdevice = { enabled = true, transform = 0 },
+  },
 })
 
 hl.on("hyprland.start", function()

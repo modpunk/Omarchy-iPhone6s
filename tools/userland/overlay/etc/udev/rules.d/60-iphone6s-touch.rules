@@ -1,0 +1,12 @@
+# iPhone 6s touchscreen (apple_z2, "iPhone 6s Touchscreen", 750x1334 panel).
+#
+# Preferred fix for range/orientation is the kernel DT (touchscreen-size-x/-y
+# set to the raw maximum, touchscreen-inverted-x/-y, touchscreen-swapped-x-y),
+# so every consumer sees correct coordinates. Use this rule only if the raw
+# range has an offset the DT can't express. Matrix (row major, normalised):
+#   [ a b c ; d e f ], x' = a*x + b*y + c, y' = d*x + e*y + f
+# x, y are normalised to the ABS maxima evtest prints (XMAX, YMAX). From the
+# corner readings: a = XMAX / (xmax_seen - xmin_seen),
+# c = -xmin_seen / (xmax_seen - xmin_seen); e and f the same way with y.
+# Leave commented until the finger test says it is needed.
+#ACTION=="add|change", KERNEL=="event*", ATTRS{name}=="iPhone 6s Touchscreen", ENV{LIBINPUT_CALIBRATION_MATRIX}="1 0 0 0 1 0"
