@@ -4,13 +4,20 @@
 #   tools/userland/push-rootfs.sh --go [rootfs.tar.xz]     ... then switch_root and wait for ssh
 # Uses testkit/phone.sh / phone.py and holds the shared phone lock while it
 # talks to the phone (TESTING-RULES.md rule 3).
-# Also, every run: sets the phone clock from this host, and if present pushes
-# the per-phone Bluetooth files into the new root's /etc/omarchy-phone/ (read at
-# boot by omarchy-phone-bt-address/-bt-keys.service). They stay out of the image:
+# Also, every run: sets the phone clock and timezone from this host (the phone
+# has no RTC worth trusting -- it reads 2021 -- and no internet/NTP of its own
+# yet, so the laptop, which is NTP-synced, is the clock source), and if
+# present pushes the per-phone Bluetooth files into the new root's
+# /etc/omarchy-phone/ (read at boot by omarchy-phone-bt-address/-bt-keys.service).
+# They stay out of the image:
 #   BT_ADDR_FILE (default ~/Work/hoolock-iphone5s/firmware/bt-bdaddr-omarchy.local)
 #   BT_KEYS_TGZ  (default ~/Work/hoolock-iphone5s/firmware/bt-keys/var-lib-bluetooth.tgz,
 #                 a tarball of /var/lib/bluetooth with members bluetooth/...)
 #   NO_BT_SEED=1 skips them.
+#   PHONE_TZ     override the timezone pushed to the phone (default: read off
+#                this laptop, `timedatectl show -p Timezone --value` or the
+#                /etc/localtime symlink target). PHONE_TZ=UTC leaves the image
+#                default (UTC) alone.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 TK="${TK:-$HOME/Work/hoolock-iphone5s/testkit}"
@@ -77,6 +84,20 @@ echo "unpacked OK (md5 $want)"
 [ -n "${NO_BT_SEED:-}" ] || P 'sh /tmp/6s/stage2.sh seed' 20
 # The RTC reads 2021; the kernel clock survives switch_root.
 P "date -u -s @$(date -u +%s) >/dev/null && echo \"phone clock: \$(date -u)\"" 20
+if [ "${PHONE_TZ:-}" = "UTC" ]; then
+	echo "PHONE_TZ=UTC: leaving the phone on the image default (UTC)"
+else
+	tz="${PHONE_TZ:-}"
+	[ -n "$tz" ] || tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+	[ -n "$tz" ] || tz="$(readlink -f /etc/localtime 2>/dev/null | sed -n 's#.*/zoneinfo/##p')"
+	if [ -z "$tz" ]; then
+		echo "no timezone detected on this laptop; phone stays on UTC (set PHONE_TZ=<zone> to force one)" >&2
+	elif ! printf '%s' "$tz" | grep -Eq '^[A-Za-z0-9_+/-]+$'; then
+		echo "timezone '$tz' has unexpected characters; phone stays on UTC (set PHONE_TZ=<zone> to force one)" >&2
+	else
+		P "sh /tmp/6s/stage2.sh timezone '$tz'" 15
+	fi
+fi
 [ "$GO" = 1 ] || { echo "next: $TK/phone.sh lock 'sh /tmp/6s/stage2.sh go'   (or rerun with --go)"; exit 0; }
 
 P 'sh /tmp/6s/stage2.sh go' 30 || true

@@ -26,7 +26,10 @@ do_push() {
 	local f="$1" b port
 	b="$(basename "$f")"
 	port=$(( 20000 + RANDOM % 20000 ))
-	P "mkdir -p /tmp/6s && rm -f /tmp/6s/$b && (nc -l -p $port > /tmp/6s/$b &) ; sleep 0.3" 15
+	# -s binds the listener to the USB address only (F8, security-review.md):
+	# it must not start answering on Wi-Fi once a driver brings up another
+	# interface.
+	P "mkdir -p /tmp/6s && rm -f /tmp/6s/$b && (nc -l -p $port -s 172.16.42.1 > /tmp/6s/$b &) ; sleep 0.3" 15
 	python3 -c 'import os,socket,sys; s=socket.create_connection((os.environ.get("PHONE_HOST","172.16.42.1"),int(sys.argv[2])),timeout=15); s.sendall(open(sys.argv[1],"rb").read()); s.shutdown(socket.SHUT_WR); s.recv(1); s.close()' "$f" "$port"
 	sleep 0.5
 	local want got

@@ -1,1 +1,11 @@
-%wheel ALL=(ALL:ALL) NOPASSWD: ALL
+# wheel requires the account password (no NOPASSWD): that password used to be
+# the only thing standing between an unlocked lock screen / an SSH session and
+# root (security-review.md F1/F6). Checked against the pinned Omarchy Phone
+# shell/app revisions (SHELL_REV/APP_REV in build-rootfs.sh): phone-hyprland,
+# ophone-sys and the omarchy-phone-session unit never call sudo (they use
+# group membership -- wheel/seat/video/input/audio/render -- and
+# systemd-logind/polkit for reboot/poweroff/suspend), so this doesn't need a
+# narrow NOPASSWD carve-out for anything the phone session does. If a future
+# on-phone tool needs one unattended root action, add a line here scoped to
+# that exact command, not a blanket rule.
+%wheel ALL=(ALL:ALL) ALL

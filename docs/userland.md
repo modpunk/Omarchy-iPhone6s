@@ -49,6 +49,44 @@ contains the Broadcom BT firmware, your SSH public keys and the sshd host keys.
 | `root/` | | the unpacked tree, owned by subuids (see "Rebuild") |
 | `ssh-hostkeys/` | | sshd host keys, reused on every rebuild so the fingerprint stays the same |
 
+## Security
+
+Full writeup: `~/Work/hoolock-iphone5s/notes/security-review.md` (findings F1-F21, a
+P0/P1/P2 plan). This section covers what's implemented on the image/deploy side; the
+lock-screen PIN, idle lock and Bluetooth pairing agent (F2/F4/F5/F6) are shell-side work
+tracked in the Omarchy-Phone repo, not here.
+
+Threat model: today the phone is reachable only over the point-to-point USB link
+(`172.16.42.0/24`) to one laptop. Once a Wi-Fi driver lands, the same image becomes
+reachable from any network the phone joins. Everything below that's marked P0 exists so
+that cutover doesn't also have to remember to retrofit a firewall and address bindings.
+
+| # | area | what changed | file(s) |
+|---|---|---|---|
+| F7 | sshd | `ListenAddress 172.16.42.1`: binds the USB address only, so sshd doesn't start answering on Wi-Fi the day another interface exists. A drop-in orders it after `systemd-networkd.service` with a 2 s restart backoff (matching `phone-telnetd.service`'s existing pattern for the same address), belt-and-suspenders: in practice usb0 already has that address before `sshd` ever starts (the ramdisk sets it before `switch_root`, `10-usb-gadget.network`'s `KeepConfiguration=yes` keeps it) | `overlay/etc/ssh/sshd_config.d/10-phone.conf`, `overlay/etc/systemd/system/sshd.service.d/10-phone.conf` |
+| F8 | deploy listeners | the `nc -l` listeners used by push/deploy and the testkit (`stage2.sh recv`, `phone.sh push`) bind explicitly to `172.16.42.1` (`-s`). Checked against the actual HoolockLinux ramdisk's busybox (musl, 1.38.0, extracted from `initramfs/initramfs.gz`), not just the build host's: its `nc` applet has `-s` | `phone/stage2.sh`, `../../testkit/phone.sh` |
+| F9 | firewall | `nftables`, default-deny inbound: `lo` and `usb0` accepted, established/related accepted, everything else dropped (including any future `wlan0`). Enabled by default. The kernel (`KBUILD/.config`) has `NETFILTER`/`NF_TABLES`/`NF_TABLES_INET` built in (`=y`, not modules), so there's no module-autoload gap for it to fail open into | `overlay/etc/nftables.conf`, `nftables.service` enabled in `build-rootfs.sh` |
+| F11 | supply chain | `archlinuxarm-keyring` (the trust root for every later pacman signature) is checksum-pinned (`KEYRING_SHA256` in `build-rootfs.sh`) and the build refuses to continue on a mismatch, instead of trusting whatever the plaintext-HTTP mirror hands back on first use. ALARM's mirror network has no working per-mirror HTTPS (checked: geo-mirrors either refuse TLS or serve a certificate for a different hostname), so the checksum is the actual control, not the transport | `build-rootfs.sh` (`stage_install`), `pacman-alarm.conf` (comment) |
+| -- | sudo | `wheel` requires the account password (`NOPASSWD` removed). Checked against the pinned Omarchy Phone shell/app revisions: `phone-hyprland`, `ophone-sys` and the `omarchy-phone-session` unit never call `sudo` (group membership + logind/polkit cover reboot/poweroff/suspend, brightness, etc.), so nothing needed a narrow carve-out | `overlay/etc/sudoers.d/10-wheel` |
+| F19-adj | root telnet | `phone-telnetd` (passwordless root telnet on the USB link, used by `testkit/phone.sh`/`phone.py` after `switch_root`) is opt-in at build time: `ENABLE_TELNETD=1` (default) enables it, `ENABLE_TELNETD=0` leaves it disabled. Default stays on because the dev workflow (`phone.sh ping`, `phone.sh lock`) depends on it; turn it off for anything beyond bench dev, since it's still unauthenticated root | `build-rootfs.sh`, `overlay/etc/systemd/system/phone-telnetd.service` |
+| F15 | secrets in build | `USERPASS` goes to `openssl passwd -6 -stdin`, not argv -- a process argv is visible to any other local user on the build host via `ps` for the life of the call, stdin isn't | `build-rootfs.sh` (`stage_config`) |
+| F17 | secrets lifecycle | `stage2.sh`'s `carry()` (which sweeps small files from `/tmp/6s` into `/var/lib/6s-testkit/` on the new root after `switch_root`) now excludes `bt-address`/`bt-keys.tgz` by name, same as it already excluded `unpack.*` | `phone/stage2.sh` |
+
+`check-rootfs.sh` verifies all of the above except F11 (a build-time gate, not something to
+re-check from the packed rootfs -- a build that got past `stage_install` already proved the
+checksum matched; also checks `KBUILD/.config` for kernel-side `nftables` support). F11 was
+exercised directly: with `$OUT/gnupg` removed, a wrong `KEYRING_SHA256` makes `stage_install`
+`die` before `pacman-key --populate` ever runs, and the real pin matches the cached
+`archlinuxarm-keyring-20240419-2` package's actual sha256.
+
+Left for later (see the P1/P2 list in security-review.md): a real per-build gate against
+shipping the default `USERPASS=omarchy` (F1), narrowing the baked-in SSH keys to one
+phone-specific key instead of every `~/.ssh/*.pub` on the laptop, `DatabaseOptional` ->
+`Required` in `pacman-alarm.conf` once builds are stable (F12), retiring
+`testkit/bluetooth/mk-alpine-bluez.sh` now that `bluez` ships via pacman (F13), and
+redacting the four unredacted third-party BT addresses in `docs/drivers/bluetooth.md`
+(F20).
+
 ## Commands for the phone session
 
 Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone lock.
@@ -67,8 +105,14 @@ Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone 
    nothing has to be insmodded in the ramdisk first. Anything you do push still carries over:
    everything under `/lib/firmware` and every small file in `/tmp/6s` gets copied into the new
    root (`/usr/lib/firmware`, `/var/lib/6s-testkit/`), because `switch_root` deletes the ramdisk.
-2. **Clock:** `push-rootfs.sh` sets it from the laptop after unpacking (the RTC reads 2021; the
-   kernel clock survives the switch). `testkit/phone.sh settime` does the same by hand.
+2. **Clock and timezone:** `push-rootfs.sh` sets both from the laptop after unpacking. The RTC
+   reads 2021 and the phone has no internet/NTP of its own yet, so the clock comes from this
+   (NTP-synced) laptop; the kernel clock survives the switch. The timezone comes from
+   `timedatectl show -p Timezone --value`, falling back to the `/etc/localtime` symlink target,
+   written to the new root's `/etc/localtime` and `/etc/timezone` before `switch_root`
+   (`stage2.sh timezone <zone>`; needs `tzdata`, already pulled in transitively). Override with
+   `PHONE_TZ=<zone>`, or skip with `PHONE_TZ=UTC` to leave the image default alone.
+   `testkit/phone.sh settime` sets just the clock by hand.
 3. **Push and unpack** (about 205 MB over NCM, then the phone's `unxz`; this took 45 s under
    qemu on the laptop):
    ```sh
@@ -155,7 +199,8 @@ autologin root) and `phone.sh ping` (phone-telnetd). Boot messages go to the fra
 | console | `getty@tty1` on simpledrm fbcon, `/etc/issue` shows the ssh address | plus `serial-getty@ttyGS0` with autologin root |
 | USB network | systemd-networkd `10-usb-gadget.network` | `172.16.42.1/24` (same address as the ramdisk, `KeepConfiguration=yes`), DHCP server hands out `.2` (replaces unudhcpd). `99-default.link` is masked so `usb0` keeps its name |
 | SSH | openssh; `PermitRootLogin prohibit-password`, password auth on | the laptop's `~/.ssh/*.pub` goes into root's and omarchy's `authorized_keys` |
-| testkit | `phone-telnetd.service`: busybox telnetd, root, bound to 172.16.42.1:23 | keeps `phone.sh`/`phone.py` working. Dev only: `systemctl disable --now phone-telnetd` |
+| testkit | `phone-telnetd.service`: busybox telnetd, root, bound to 172.16.42.1:23 | keeps `phone.sh`/`phone.py` working. Opt-in at build time (`ENABLE_TELNETD`, default 1; see "Security"), or on an already-built image: `systemctl disable --now phone-telnetd` |
+| firewall | `nftables`, default-deny inbound except `lo`/`usb0` | see "Security" (F9) |
 | Wi-Fi | iwd 3.12 (what Omarchy uses; NetworkManager would add ~30 MB of deps) | enabled, but a `ConditionPathExistsGlob=/sys/class/ieee80211/*` drop-in keeps it idle until a Wi-Fi driver exists |
 | Bluetooth | bluez 5.87 + bluez-utils, `bluetooth.service` | the `.hcd` from `firmware/brcm/` is installed as `brcm/BCM.apple,n71.hcd` and `BCM4350C5.apple,n71.hcd` |
 | audio | pipewire 1.6.9, wireplumber, pipewire-pulse (user units, enabled globally) | the kernel has no ALSA (CONFIG_SND off). This is for BT audio later |
@@ -167,8 +212,8 @@ autologin root) and `phone.sh ping` (phone-telnetd). Boot messages go to the fra
 | phone shell | quickshell 0.3.1 (Qt 6), wtype, brightnessctl, upower, libnotify | see "Omarchy Phone shell and Phone app" |
 | phone app | gtk4, libadwaita, python-gobject (python 3) | `GSK_RENDERER=cairo` in the session. Icons: adwaita-icon-theme (Yaru isn't in ALARM) |
 | memory | zram-generator: `zram0` = min(RAM\*3/4, 1.5 GiB), zstd; `vm.swappiness=150`, `vm.page-cluster=0` | tmpfs pages can swap out to zram, so cold parts of the rootfs stay compressed. zram is RAM-to-RAM, so swapping early (high swappiness, no readahead clustering) costs CPU, not disk time |
-| user | `omarchy` / `omarchy`, groups wheel seat video input audio render, passwordless sudo, lingering | root password locked. Linger keeps `/run/user/1000` and the PipeWire user units alive after the SSH command that started Hyprland exits |
-| misc | `LANG=C.UTF-8` (built into glibc, no locale-gen), UTC, volatile journal (48 MB), fixed machine-id, `/usr/lib/clock-epoch` | firstboot and networkd-wait-online are masked |
+| user | `omarchy` / `omarchy`, groups wheel seat video input audio render, sudo needs the account password (see "Security"), lingering | root password locked. Linger keeps `/run/user/1000` and the PipeWire user units alive after the SSH command that started Hyprland exits |
+| misc | `LANG=C.UTF-8` (built into glibc, no locale-gen), UTC in the image (set to the laptop's zone at deploy time, see "Commands for the phone session"), volatile journal (48 MB), fixed machine-id, `/usr/lib/clock-epoch` | firstboot and networkd-wait-online are masked |
 
 Removed to save space: man, doc, info and gtk-doc pages, translations, `/usr/include`, `*.a`,
 gir XML, `libteflon`, the default Hyprland wallpapers, Python's test suite, IDLE, Tk and `-O`
@@ -421,10 +466,12 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/check-rootfs.sh` | laptop | 16K ELF/allocator scan, library resolution, qemu smoke tests |
 | `tools/userland/mk-initramfs.sh` | laptop | builds `initramfs-userland.gz` |
 | `tools/userland/test-switch-sim.sh` | laptop | PID 1 switch_root rehearsal with the ramdisk's own busybox |
-| `tools/userland/push-rootfs.sh` | laptop | push BT seed files, stream + unpack + verify, set the clock (`--go` to hand over and wait for ssh) |
+| `tools/userland/push-rootfs.sh` | laptop | push BT seed files, stream + unpack + verify, set the clock and timezone (`--go` to hand over and wait for ssh) |
 | `tools/userland/overlay/etc/modules-load.d/`, `modprobe.d/` | phone | driver load order and the gauge softdep |
 | `tools/userland/overlay/etc/sysctl.d/99-phone-zram.conf` | phone | swappiness/page-cluster tuning for zram (see "What's in it") |
 | `tools/userland/overlay/etc/systemd/system/omarchy-phone-bt-{keys,address}.service`, `overlay/usr/lib/phone-tk/bt-address` | phone | Bluetooth pairing restore and public address |
+| `tools/userland/overlay/etc/nftables.conf` | phone | default-deny inbound firewall (`lo` + `usb0` only, see "Security") |
+| `tools/userland/overlay/etc/systemd/system/sshd.service.d/10-phone.conf` | phone | orders sshd after `usb0`, matches `phone-telnetd.service`'s restart backoff (see "Security", F7) |
 | `tools/userland/overlay/etc/systemd/user/omarchy-phone-session.service`, `overlay/usr/lib/phone-tk/wait-display` | phone | starts the phone session at boot |
-| `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `go`, `nsboot` |
+| `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `timezone`, `go`, `nsboot` |
 | `tools/userland/phone/userland-switch.sh` | phone (PID 1) | sourced by the patched `/init` |

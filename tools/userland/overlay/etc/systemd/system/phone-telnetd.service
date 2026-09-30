@@ -1,6 +1,9 @@
 # Dev only: passwordless root telnet on the USB link, so testkit/phone.sh
 # (phone.py talks telnet to 172.16.42.1:23) keeps working after switch_root.
-# Same exposure as the HoolockLinux ramdisk. Disable with:
+# Same exposure as the HoolockLinux ramdisk. Opt-in at build time
+# (ENABLE_TELNETD=0 tools/userland/build-rootfs.sh leaves it disabled;
+# default is 1, since testkit/phone.sh depends on it -- see docs/userland.md
+# "Security"). Disable on an already-built image with:
 #   systemctl disable --now phone-telnetd
 [Unit]
 Description=Root telnet on the USB link for testkit/phone.sh
