@@ -1,0 +1,5 @@
+#!/bin/bash
+# omarchy:summary=Lock the phone
+# Phone version of Omarchy's omarchy-system-lock: the Omarchy Phone shell owns
+# the lock screen.
+exec ophone-ctl lock

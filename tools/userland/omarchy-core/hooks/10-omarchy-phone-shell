@@ -1,0 +1,3 @@
+# Omarchy theme-set hook (run by omarchy-hook with bash): the Omarchy Phone
+# shell only reads the new colours when it starts, so restart it.
+omarchy-restart-shell || true

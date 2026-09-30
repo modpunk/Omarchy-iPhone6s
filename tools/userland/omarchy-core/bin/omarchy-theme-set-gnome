@@ -1,0 +1,16 @@
+#!/bin/bash
+# omarchy:hidden=true
+# Adapted from Omarchy's omarchy-theme-set-gnome (MIT, (c) David Heinemeier
+# Hansson): light/dark for GTK/libadwaita apps (the Phone app). The icon
+# theme is left alone: Omarchy's themes name Yaru icon themes, which Arch
+# Linux ARM doesn't package, and the phone uses Adwaita.
+[[ -n ${DBUS_SESSION_BUS_ADDRESS:-} ]] || exit 0
+command -v gsettings >/dev/null || exit 0
+mode=$(omarchy-theme-color --file "$HOME/.local/state/omarchy/current/theme/colors.toml" mode 2>/dev/null)
+if [[ $mode == light ]]; then
+  gsettings set org.gnome.desktop.interface color-scheme prefer-light
+  gsettings set org.gnome.desktop.interface gtk-theme Adwaita
+else
+  gsettings set org.gnome.desktop.interface color-scheme prefer-dark
+  gsettings set org.gnome.desktop.interface gtk-theme Adwaita-dark
+fi
