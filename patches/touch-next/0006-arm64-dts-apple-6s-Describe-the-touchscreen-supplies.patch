@@ -1,0 +1,163 @@
+From ef6a37239fb7d1e9c119efa59a85c8e1bc51a74f Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 20:01:30 -0500
+Subject: [PATCH 6/8] arm64: dts: apple: 6s: Describe the touchscreen supplies
+ and clock
+
+Add the touch core switch (PMU 0x319 bit 0), the Chestnut display PMU
+with the touch analog switch (0x05 bit 4), and the PMGR touch reference
+clock, and wire them to the N71/N71m touchscreen nodes together with
+the CS setup/hold delays from the Apple DT (multi-touch reg: 5000 and
+10000 ns).
+
+Everything stays disabled: the clock register offset is only known from
+A10 so far, and a regulator that is enabled without a consumer would be
+switched off by the unused-regulator cleanup.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/apple/s800-0-3.dtsi  | 16 +++++++++++++
+ arch/arm64/boot/dts/apple/s8000-n71.dts  | 16 +++++++++----
+ arch/arm64/boot/dts/apple/s8003-n71m.dts | 16 +++++++++----
+ arch/arm64/boot/dts/apple/s800x-6s.dtsi  | 30 ++++++++++++++++++++++++
+ 4 files changed, 70 insertions(+), 8 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/apple/s800-0-3.dtsi b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+index d39591992eba..48b508f16425 100644
+--- a/arch/arm64/boot/dts/apple/s800-0-3.dtsi
++++ b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+@@ -255,6 +255,22 @@ pmgr: power-management@20e000000 {
+ 			#size-cells = <1>;
+ 
+ 			reg = <0x2 0xe000000 0 0x8c000>;
++
++			/*
++			 * 32.768 kHz multitouch reference (Apple DT
++			 * function-clock_enable TCLK, 32768 Hz). The offset is
++			 * where the A10 PMGR has it; not yet confirmed on A9, so
++			 * it stays disabled until it is.
++			 */
++			touch_clk: clock-controller@78000 {
++				compatible = "apple,s8000-touch-clock";
++				reg = <0x78000 0x8>;
++				#clock-cells = <0>;
++				clocks = <&clkref>;
++				clock-frequency = <32768>;
++				clock-output-names = "touch_ref";
++				status = "disabled";
++			};
+ 		};
+ 
+ 		aic: interrupt-controller@20e100000 {
+diff --git a/arch/arm64/boot/dts/apple/s8000-n71.dts b/arch/arm64/boot/dts/apple/s8000-n71.dts
+index 9a9a9b2cd6f1..61b6a20e35f9 100644
+--- a/arch/arm64/boot/dts/apple/s8000-n71.dts
++++ b/arch/arm64/boot/dts/apple/s8000-n71.dts
+@@ -22,6 +22,12 @@ touchscreen@0 {
+ 		spi-max-frequency = <8000000>;
+ 		spi-cpol;
+ 		spi-cpha;
++		/* ADT multi-touch reg words 5 and 6 */
++		spi-cs-setup-delay-ns = <5000>;
++		spi-cs-hold-delay-ns = <10000>;
++		vdd-supply = <&touch_vdd>;
++		avdd-supply = <&touch_avdd>;
++		clocks = <&touch_clk>;
+ 		reset-gpios = <&pinctrl_ap 75 GPIO_ACTIVE_LOW>;
+ 		interrupts-extended = <&pinctrl_ap 142 IRQ_TYPE_EDGE_FALLING>;
+ 		firmware-name = "apple/mtfw-n71.bin";
+@@ -29,10 +35,12 @@ touchscreen@0 {
+ 		touchscreen-size-x = <750>;
+ 		touchscreen-size-y = <1334>;
+ 		/*
+-		 * Not enabled by default yet: the analog supply (Chestnut
+-		 * display PMU LDO 2) has no Linux driver, and the
+-		 * calibration blob (apple,z2-cal-blob, ADT
+-		 * multi-touch-calibration) must be filled in by the loader.
++		 * Not enabled by default yet: the touch reference clock register
++		 * is not confirmed on A9, and the calibration blob
++		 * (apple,z2-cal-blob, runtime ADT multi-touch-calibration) is
++		 * device unique and must be filled in by the loader. Enabling
++		 * touch means enabling this node, touch_vdd, display_pmu and
++		 * touch_clk together.
+ 		 */
+ 		status = "disabled";
+ 	};
+diff --git a/arch/arm64/boot/dts/apple/s8003-n71m.dts b/arch/arm64/boot/dts/apple/s8003-n71m.dts
+index 13e2d25ed272..1fb3e76c29d7 100644
+--- a/arch/arm64/boot/dts/apple/s8003-n71m.dts
++++ b/arch/arm64/boot/dts/apple/s8003-n71m.dts
+@@ -22,6 +22,12 @@ touchscreen@0 {
+ 		spi-max-frequency = <8000000>;
+ 		spi-cpol;
+ 		spi-cpha;
++		/* ADT multi-touch reg words 5 and 6 */
++		spi-cs-setup-delay-ns = <5000>;
++		spi-cs-hold-delay-ns = <10000>;
++		vdd-supply = <&touch_vdd>;
++		avdd-supply = <&touch_avdd>;
++		clocks = <&touch_clk>;
+ 		reset-gpios = <&pinctrl_ap 75 GPIO_ACTIVE_LOW>;
+ 		interrupts-extended = <&pinctrl_ap 142 IRQ_TYPE_EDGE_FALLING>;
+ 		firmware-name = "apple/mtfw-n71.bin";
+@@ -29,10 +35,12 @@ touchscreen@0 {
+ 		touchscreen-size-x = <750>;
+ 		touchscreen-size-y = <1334>;
+ 		/*
+-		 * Not enabled by default yet: the analog supply (Chestnut
+-		 * display PMU LDO 2) has no Linux driver, and the
+-		 * calibration blob (apple,z2-cal-blob, ADT
+-		 * multi-touch-calibration) must be filled in by the loader.
++		 * Not enabled by default yet: the touch reference clock register
++		 * is not confirmed on A9, and the calibration blob
++		 * (apple,z2-cal-blob, runtime ADT multi-touch-calibration) is
++		 * device unique and must be filled in by the loader. Enabling
++		 * touch means enabling this node, touch_vdd, display_pmu and
++		 * touch_clk together.
+ 		 */
+ 		status = "disabled";
+ 	};
+diff --git a/arch/arm64/boot/dts/apple/s800x-6s.dtsi b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+index 46db22c1e933..f33af7f75d3d 100644
+--- a/arch/arm64/boot/dts/apple/s800x-6s.dtsi
++++ b/arch/arm64/boot/dts/apple/s800x-6s.dtsi
+@@ -82,6 +82,36 @@ rtc_offset: rtc-offset@4 {
+ 				};
+ 			};
+ 		};
++
++		/*
++		 * Touch controller core supply: Apple DT function-power_ldo
++		 * (pmuL 0x219 -> output 0x19, enable 0x319 bit 0). The bootloader
++		 * leaves it on; its voltage is not programmed by the OS.
++		 */
++		touch_vdd: regulator@319 {
++			compatible = "apple,pmu-switch";
++			reg = <0x319 0x1>;
++			apple,enable-mask = <0x1>;
++			regulator-name = "touch-vdd";
++			status = "disabled";
++		};
++	};
++
++	/* Display PMU ("Chestnut"): LCD rails and the touch analog supply */
++	display_pmu: pmu@27 {
++		compatible = "apple,chestnut-pmu";
++		reg = <0x27>;
++		#address-cells = <1>;
++		#size-cells = <1>;
++		status = "disabled";
++
++		/* Apple DT function-power_ana (dpLE 0x302): reg 0x05 bit 4 */
++		touch_avdd: regulator@5 {
++			compatible = "apple,pmu-switch";
++			reg = <0x5 0x1>;
++			apple,enable-mask = <0x10>;
++			regulator-name = "touch-avdd";
++		};
+ 	};
+ };
+ 
+-- 
+2.55.0
+

@@ -1,0 +1,178 @@
+From 060d39bf74ac342e3941b3d7a8ad51a5b4827d1d Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 20:01:30 -0500
+Subject: [PATCH 3/8] regulator: Add Apple PMU on/off switch driver
+
+Switch one enable field in the parent MFD's regmap. The parent is either
+the Apple I2C PMIC or the Chestnut display PMU, which is added to
+simple-mfd-i2c with its default 8-bit register map so its DT children are
+populated with a regmap to use.
+
+Only the enable field is written (regmap_update_bits), so the LCD rails
+that share Chestnut register 0x05 are never touched. Corellium's GPL
+iPhone 7 kernel ("hx,i2c-pmu-switch") drives the same kind of outputs the
+same way: PMU 0x31f bit 0 and Chestnut 0x05 bit 4 for its touch supplies.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/mfd/simple-mfd-i2c.c         |   1 +
+ drivers/regulator/Kconfig            |  10 +++
+ drivers/regulator/Makefile           |   1 +
+ drivers/regulator/apple-pmu-switch.c | 100 +++++++++++++++++++++++++++
+ 4 files changed, 112 insertions(+)
+ create mode 100644 drivers/regulator/apple-pmu-switch.c
+
+diff --git a/drivers/mfd/simple-mfd-i2c.c b/drivers/mfd/simple-mfd-i2c.c
+index 8a81d7acc063..90259284b3d1 100644
+--- a/drivers/mfd/simple-mfd-i2c.c
++++ b/drivers/mfd/simple-mfd-i2c.c
+@@ -126,6 +126,7 @@ static const struct simple_mfd_data spacemit_p1 = {
+ 
+ static const struct of_device_id simple_mfd_i2c_of_match[] = {
+ 	{ .compatible = "apple,i2c-pmic", .data = &apple_i2c_pmic },
++	{ .compatible = "apple,chestnut-pmu" },
+ 	{ .compatible = "delta,tn48m-cpld" },
+ 	{ .compatible = "fsl,ls1028aqds-fpga" },
+ 	{ .compatible = "fsl,lx2160aqds-fpga" },
+diff --git a/drivers/regulator/Kconfig b/drivers/regulator/Kconfig
+index 89789ac7a786..272b17ceb0ae 100644
+--- a/drivers/regulator/Kconfig
++++ b/drivers/regulator/Kconfig
+@@ -97,6 +97,16 @@ config REGULATOR_88PM886
+ 	help
+ 	  This driver implements support for Marvell 88PM886 voltage regulators.
+ 
++config REGULATOR_APPLE_PMU_SWITCH
++	tristate "Apple PMU power switches"
++	depends on MFD_SIMPLE_MFD_I2C || COMPILE_TEST
++	depends on OF
++	help
++	  On/off outputs of the power chips on Apple A7-A11 phones (the
++	  Dialog main PMU and the display PMU), switched by one enable bit
++	  in the parent device's register map. Used for the iPhone 6s
++	  touchscreen supplies.
++
+ config REGULATOR_ACT8865
+ 	tristate "Active-semi act8865 voltage regulator"
+ 	depends on I2C
+diff --git a/drivers/regulator/Makefile b/drivers/regulator/Makefile
+index 5a764cec8df8..b771f8cb0dab 100644
+--- a/drivers/regulator/Makefile
++++ b/drivers/regulator/Makefile
+@@ -20,6 +20,7 @@ obj-$(CONFIG_REGULATOR_CPCAP) += cpcap-regulator.o
+ obj-$(CONFIG_REGULATOR_AAT2870) += aat2870-regulator.o
+ obj-$(CONFIG_REGULATOR_AB8500)	+= ab8500-ext.o ab8500.o
+ obj-$(CONFIG_REGULATOR_ACT8865) += act8865-regulator.o
++obj-$(CONFIG_REGULATOR_APPLE_PMU_SWITCH) += apple-pmu-switch.o
+ obj-$(CONFIG_REGULATOR_ACT8945A) += act8945a-regulator.o
+ obj-$(CONFIG_REGULATOR_AD5398) += ad5398.o
+ obj-$(CONFIG_REGULATOR_ADP5055) += adp5055-regulator.o
+diff --git a/drivers/regulator/apple-pmu-switch.c b/drivers/regulator/apple-pmu-switch.c
+new file mode 100644
+index 000000000000..1f508493e996
+--- /dev/null
++++ b/drivers/regulator/apple-pmu-switch.c
+@@ -0,0 +1,100 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * On/off outputs of the power chips on Apple A7-A11 phones
++ *
++ * Both the Dialog main PMU (i2c 0x74, 16-bit register addresses) and the
++ * display PMU ("Chestnut", i2c 0x27) have outputs that the OS only
++ * switches on and off: the voltage is set by the bootloader / OTP and is
++ * not touched here. Each output is one enable field in the parent MFD's
++ * register map:
++ *
++ *   iPhone 6s touch core:   D2255 0x319 bit 0 (Apple DT function-power_ldo)
++ *   iPhone 6s touch analog: Chestnut 0x05 bit 4 (Apple DT function-power_ana)
++ *
++ * The same model is used for the iPhone 7 touch supplies in Corellium's
++ * GPL "hx,i2c-pmu-switch" driver (PMU 0x31f bit 0, Chestnut 0x05 bit 4).
++ *
++ * Only the enable field is ever written (regmap_update_bits), so the other
++ * outputs that share a register (the LCD rails in Chestnut 0x05 bits 3:0)
++ * are left alone.
++ */
++
++#include <linux/module.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/regmap.h>
++#include <linux/regulator/driver.h>
++#include <linux/regulator/of_regulator.h>
++
++static const struct regulator_ops apple_pmu_switch_ops = {
++	.enable = regulator_enable_regmap,
++	.disable = regulator_disable_regmap,
++	.is_enabled = regulator_is_enabled_regmap,
++};
++
++static int apple_pmu_switch_probe(struct platform_device *pdev)
++{
++	struct device *dev = &pdev->dev;
++	struct device_node *np = dev->of_node;
++	struct regulator_config config = {};
++	struct regulator_desc *desc;
++	struct regulator_dev *rdev;
++	struct regmap *map;
++	u32 reg, mask, delay;
++
++	map = dev_get_regmap(dev->parent, NULL);
++	if (!map)
++		return dev_err_probe(dev, -ENODEV, "parent has no regmap\n");
++
++	if (of_property_read_u32_index(np, "reg", 0, &reg))
++		return dev_err_probe(dev, -EINVAL, "missing reg\n");
++	if (of_property_read_u32(np, "apple,enable-mask", &mask) || !mask)
++		return dev_err_probe(dev, -EINVAL, "missing apple,enable-mask\n");
++
++	desc = devm_kzalloc(dev, sizeof(*desc), GFP_KERNEL);
++	if (!desc)
++		return -ENOMEM;
++
++	desc->name = devm_kasprintf(dev, GFP_KERNEL, "%pOFn", np);
++	if (!desc->name)
++		return -ENOMEM;
++	desc->type = REGULATOR_VOLTAGE;
++	desc->owner = THIS_MODULE;
++	desc->ops = &apple_pmu_switch_ops;
++	desc->enable_reg = reg;
++	desc->enable_mask = mask;
++	desc->enable_val = mask;
++	if (!of_property_read_u32(np, "startup-delay-us", &delay))
++		desc->enable_time = delay;
++
++	config.dev = dev;
++	config.regmap = map;
++	config.of_node = np;
++	config.init_data = of_get_regulator_init_data(dev, np, desc);
++	if (!config.init_data)
++		return -ENOMEM;
++
++	rdev = devm_regulator_register(dev, desc, &config);
++	if (IS_ERR(rdev))
++		return dev_err_probe(dev, PTR_ERR(rdev), "register failed\n");
++
++	return 0;
++}
++
++static const struct of_device_id apple_pmu_switch_of_match[] = {
++	{ .compatible = "apple,pmu-switch" },
++	{}
++};
++MODULE_DEVICE_TABLE(of, apple_pmu_switch_of_match);
++
++static struct platform_driver apple_pmu_switch_driver = {
++	.driver = {
++		.name = "apple-pmu-switch",
++		.of_match_table = apple_pmu_switch_of_match,
++	},
++	.probe = apple_pmu_switch_probe,
++};
++module_platform_driver(apple_pmu_switch_driver);
++
++MODULE_DESCRIPTION("Apple PMU on/off power switches");
++MODULE_LICENSE("GPL");
+-- 
+2.55.0
+

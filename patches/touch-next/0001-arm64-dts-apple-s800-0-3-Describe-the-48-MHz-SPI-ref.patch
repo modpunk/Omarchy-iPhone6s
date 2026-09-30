@@ -1,0 +1,81 @@
+From 70a84a98dd65dacdd8f66b1f308f87c7ee8544ca Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 10:26:00 -0500
+Subject: [PATCH 1/8] arm64: dts: apple: s800-0-3: Describe the 48 MHz SPI
+ reference clock
+
+spi1-3 pointed at the 24 MHz clkref, but the SCK rate measured on an
+iPhone 6s for a known divider is twice what a 24 MHz reference gives:
+the S5L SPI reference ("nclk") the bootloader leaves running is 48 MHz.
+With clkref every transfer ran at twice the requested speed.
+
+Linux has no s8000 PMGR clock driver, so add a fixed clock for the SPI
+reference and use it for all three controllers. spi-apple-s5l already
+derives CLKDIV from clk_get_rate(), so no driver change is needed.
+
+Open point: the iBoot-filled arm-io "clock-frequencies" table lists
+61538461 Hz (800 MHz / 13) for entries 0x2d-0x30; the spi1-3
+"clock-ids" (0x12e-0x130) appear to index them, while the same indexing gives
+the correct 24 MHz for the UARTs. A polled-PIO timing measurement reads
+slow, so confirm the rate with a long transfer at a low requested rate
+(where per-FIFO overhead is negligible) before this goes upstream.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ arch/arm64/boot/dts/apple/s800-0-3.dtsi | 19 ++++++++++++++++---
+ 1 file changed, 16 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/apple/s800-0-3.dtsi b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+index 0c1fd8526de5..d39591992eba 100644
+--- a/arch/arm64/boot/dts/apple/s800-0-3.dtsi
++++ b/arch/arm64/boot/dts/apple/s800-0-3.dtsi
+@@ -25,6 +25,19 @@ clkref: clock-ref {
+ 		clock-output-names = "clkref";
+ 	};
+ 
++	/*
++	 * Reference clock of the S5L-style SPI blocks, as the bootloader leaves
++	 * it. Linux has no s8000 PMGR clock driver, so it is described as a
++	 * fixed clock. The rate was measured on an iPhone 6s from the SCK rate
++	 * produced for a known divider: it is 48 MHz, not the 24 MHz clkref.
++	 */
++	clk_spi_ref: clock-spi-ref {
++		compatible = "fixed-clock";
++		#clock-cells = <0>;
++		clock-frequency = <48000000>;
++		clock-output-names = "spi_ref";
++	};
++
+ 	cpus {
+ 		#address-cells = <2>;
+ 		#size-cells = <0>;
+@@ -141,7 +154,7 @@ spi1: spi@20a084000 {
+ 			reg = <0x2 0x0a084000 0x0 0x4000>;
+ 			interrupt-parent = <&aic>;
+ 			interrupts = <AIC_IRQ 189 IRQ_TYPE_LEVEL_HIGH>;
+-			clocks = <&clkref>;
++			clocks = <&clk_spi_ref>;
+ 			power-domains = <&ps_spi1>;
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+@@ -153,7 +166,7 @@ spi2: spi@20a088000 {
+ 			reg = <0x2 0x0a088000 0x0 0x4000>;
+ 			interrupt-parent = <&aic>;
+ 			interrupts = <AIC_IRQ 190 IRQ_TYPE_LEVEL_HIGH>;
+-			clocks = <&clkref>;
++			clocks = <&clk_spi_ref>;
+ 			pinctrl-0 = <&spi2_pins>;
+ 			pinctrl-names = "default";
+ 			power-domains = <&ps_spi2>;
+@@ -167,7 +180,7 @@ spi3: spi@20a08c000 {
+ 			reg = <0x2 0x0a08c000 0x0 0x4000>;
+ 			interrupt-parent = <&aic>;
+ 			interrupts = <AIC_IRQ 191 IRQ_TYPE_LEVEL_HIGH>;
+-			clocks = <&clkref>;
++			clocks = <&clk_spi_ref>;
+ 			power-domains = <&ps_spi3>;
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+-- 
+2.55.0
+

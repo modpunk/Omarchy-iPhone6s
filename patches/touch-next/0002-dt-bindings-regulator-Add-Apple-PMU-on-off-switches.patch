@@ -1,0 +1,152 @@
+From 9eaf14fe08db197d17de816f8f1dfc4981b0a71b Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 20:01:30 -0500
+Subject: [PATCH 2/8] dt-bindings: regulator: Add Apple PMU on/off switches
+
+The main PMU and the display PMU ("Chestnut") of Apple A7-A11 phones have
+outputs the OS only switches on and off with one enable field; their
+voltage is set by the bootloader or OTP. The iPhone 6s touch controller
+needs two of them: main PMU 0x319 bit 0 (core) and Chestnut 0x05 bit 4
+(analog).
+
+Describe such an output as apple,pmu-switch, allow it as a child of the
+Apple I2C PMIC, and add a binding for the Chestnut display PMU so its
+switch can be described too.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../bindings/mfd/apple,chestnut-pmu.yaml      | 61 +++++++++++++++++++
+ .../devicetree/bindings/mfd/apple,pmic.yaml   |  3 +
+ .../bindings/regulator/apple,pmu-switch.yaml  | 38 ++++++++++++
+ 3 files changed, 102 insertions(+)
+ create mode 100644 Documentation/devicetree/bindings/mfd/apple,chestnut-pmu.yaml
+ create mode 100644 Documentation/devicetree/bindings/regulator/apple,pmu-switch.yaml
+
+diff --git a/Documentation/devicetree/bindings/mfd/apple,chestnut-pmu.yaml b/Documentation/devicetree/bindings/mfd/apple,chestnut-pmu.yaml
+new file mode 100644
+index 000000000000..9dcdc006881f
+--- /dev/null
++++ b/Documentation/devicetree/bindings/mfd/apple,chestnut-pmu.yaml
+@@ -0,0 +1,61 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/mfd/apple,chestnut-pmu.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Apple "Chestnut" display PMU
++
++maintainers:
++  - modpunk <27315771+modpunk@users.noreply.github.com>
++
++description:
++  Display power chip on iPhones of the A8-A10 generation, on the first I2C
++  bus with 8-bit register addresses. Besides the LCD rails it switches the
++  touch controller's analog supply.
++
++properties:
++  compatible:
++    const: apple,chestnut-pmu
++
++  reg:
++    maxItems: 1
++
++  "#address-cells":
++    const: 1
++
++  "#size-cells":
++    const: 1
++
++patternProperties:
++  "^regulator@[0-9a-f]+$":
++    $ref: /schemas/regulator/apple,pmu-switch.yaml
++
++required:
++  - compatible
++  - reg
++  - "#address-cells"
++  - "#size-cells"
++
++additionalProperties: false
++
++examples:
++  - |
++    i2c {
++        #address-cells = <1>;
++        #size-cells = <0>;
++
++        pmu@27 {
++            compatible = "apple,chestnut-pmu";
++            reg = <0x27>;
++            #address-cells = <1>;
++            #size-cells = <1>;
++
++            regulator@5 {
++                compatible = "apple,pmu-switch";
++                reg = <0x5 0x1>;
++                apple,enable-mask = <0x10>;
++                regulator-name = "touch-avdd";
++            };
++        };
++    };
+diff --git a/Documentation/devicetree/bindings/mfd/apple,pmic.yaml b/Documentation/devicetree/bindings/mfd/apple,pmic.yaml
+index 8bf64a835559..afc4116ba2d8 100644
+--- a/Documentation/devicetree/bindings/mfd/apple,pmic.yaml
++++ b/Documentation/devicetree/bindings/mfd/apple,pmic.yaml
+@@ -64,6 +64,9 @@ patternProperties:
+   "^nvmem(@[0-9a-f]+)?$":
+     $ref: /schemas/nvmem/apple,pmic-nvmem.yaml
+ 
++  "^regulator@[0-9a-f]+$":
++    $ref: /schemas/regulator/apple,pmu-switch.yaml
++
+ required:
+   - compatible
+   - reg
+diff --git a/Documentation/devicetree/bindings/regulator/apple,pmu-switch.yaml b/Documentation/devicetree/bindings/regulator/apple,pmu-switch.yaml
+new file mode 100644
+index 000000000000..6432c44e136d
+--- /dev/null
++++ b/Documentation/devicetree/bindings/regulator/apple,pmu-switch.yaml
+@@ -0,0 +1,38 @@
++# SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
++%YAML 1.2
++---
++$id: http://devicetree.org/schemas/regulator/apple,pmu-switch.yaml#
++$schema: http://devicetree.org/meta-schemas/core.yaml#
++
++title: Apple PMU on/off power switch
++
++maintainers:
++  - modpunk <27315771+modpunk@users.noreply.github.com>
++
++description:
++  An output of a power chip on Apple A7-A11 phones (the main PMU or the
++  display PMU) that the OS only switches on and off with one enable field
++  in the parent's register map. The output voltage is set by the
++  bootloader or OTP and is not described.
++
++allOf:
++  - $ref: regulator.yaml#
++
++properties:
++  compatible:
++    const: apple,pmu-switch
++
++  reg:
++    maxItems: 1
++    description: Offset and size of the register holding the enable field
++
++  apple,enable-mask:
++    $ref: /schemas/types.yaml#/definitions/uint32
++    description: Enable field; all bits set means on, all clear means off
++
++required:
++  - compatible
++  - reg
++  - apple,enable-mask
++
++unevaluatedProperties: false
+-- 
+2.55.0
+

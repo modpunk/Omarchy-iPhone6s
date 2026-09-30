@@ -1,0 +1,513 @@
+From 58239955d992887dfc94a16a3cbb6cea962cd61b Mon Sep 17 00:00:00 2001
+From: kingmk3r <kingmk3r@katari.ai>
+Date: Tue, 29 Sep 2026 20:45:37 -0500
+Subject: [PATCH 8/8] Input: apple_z2: iPhone: 1 MHz bootloader, CS timing,
+ acks and tracing
+
+Fixes for the first run against a live iPhone 6s HBPP bootloader, where
+the controller answered (1f01, 4879 ..., version 0x434d15c1 at
+0x10008ffc) but the calibration packet was rejected:
+
+- Build the calibration DATA packet directly in wire order with the
+  10-byte header, the same framing as Apple's constructed firmware
+  images (30 01 | len/4 | addr lo, hi | header sum | payload | sum32).
+  The payload is swapped per 16-bit word by default, because the
+  bootloader stores each big endian wire word little endian (the images
+  carry ARM word e59ff018 as f0 18 e5 9f); hbpp_cal_swap=0 sends it as is.
+- Run the bootloader phase at hbpp_speed_hz (default 1 MHz, the rate
+  touch_diag_d2 verified); the DT spi-max-frequency is used after
+  EXECUTE for the report reads.
+- Apply the ADT chip select setup/hold times (5000/10000 ns) when the DT
+  gives none. The booted DT and a later overlay don't set them, and the
+  SPI core only parses them when the device is created.
+- Send long packets as one message of 4 KiB transfers with CS held.
+- Poll ATN (up to 50 times, 1 ms apart) while the bootloader still reads
+  idle after a packet; any other status is final and is reported with
+  its name.
+- Check the memory read reply (status 0x4c39 and the value sum).
+- dyndbg: every HBPP packet (head and tail of long ones), every status
+  word and every report read. Milestones are logged at info level.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/apple_z2.c | 296 +++++++++++++++++++++++----
+ 1 file changed, 258 insertions(+), 38 deletions(-)
+
+diff --git a/drivers/input/touchscreen/apple_z2.c b/drivers/input/touchscreen/apple_z2.c
+index ab9fe0c77c1c..ac4f35d16a86 100644
+--- a/drivers/input/touchscreen/apple_z2.c
++++ b/drivers/input/touchscreen/apple_z2.c
+@@ -45,7 +45,34 @@
+ #define APPLE_Z2_HBPP_EXECUTE            0x1d53
+ #define APPLE_Z2_HBPP_ACK_DATA           0x4bc1
+ #define APPLE_Z2_HBPP_ACK_REG            0x4ad1
++#define APPLE_Z2_HBPP_IDLE               0x4879
++#define APPLE_Z2_HBPP_READ_DATA          0x4c39
+ #define APPLE_Z2_HBPP_PKT_LEN            16
++/* 0x3001, len/4, addr (two words), header sum: 10 bytes, no padding */
++#define APPLE_Z2_HBPP_DATA_HDR_LEN       10
++/* Largest single SPI transfer; longer packets are split with CS held */
++#define APPLE_Z2_HBPP_CHUNK              4096
++#define APPLE_Z2_HBPP_ACK_POLLS          50
++
++/*
++ * Bootloader phase SPI clock. The HBPP handshake is known to work at 1 MHz
++ * (touch_diag_d2 on N71); the DT spi-max-frequency (8 MHz, the ADT value) is
++ * used once the firmware runs. 0 means "use the DT speed for the bootloader
++ * too".
++ */
++static unsigned int hbpp_speed_hz = 1000000;
++module_param(hbpp_speed_hz, uint, 0644);
++MODULE_PARM_DESC(hbpp_speed_hz, "HBPP bootloader SPI clock in Hz (0: DT speed)");
++
++/*
++ * The bootloader stores every big endian 16-bit wire word little endian (the
++ * constructed firmware images carry ARM code as f0 18 e5 9f on the wire for
++ * the word e59ff018), so the calibration bytes are byte swapped per 16-bit
++ * word to land in memory in ADT order. Clear this to send them unswapped.
++ */
++static bool hbpp_cal_swap = true;
++module_param(hbpp_cal_swap, bool, 0644);
++MODULE_PARM_DESC(hbpp_cal_swap, "Swap calibration bytes per 16-bit word (default on)");
+ 
+ struct apple_z2_reg {
+ 	u32 addr;
+@@ -68,6 +95,9 @@ struct apple_z2_variant {
+ 	unsigned int num_post_regs;
+ 	unsigned int calib_wait_ms;
+ 	u32 exec_addr;
++	/* Chip select timing if the DT gives none (ADT multi-touch reg) */
++	u32 cs_setup_ns;
++	u32 cs_hold_ns;
+ };
+ 
+ struct apple_z2 {
+@@ -190,8 +220,10 @@ static int apple_z2_read_packet(struct apple_z2 *z2)
+ 	if (error)
+ 		return error;
+ 
+-	if (z2->rx_buf[0] != APPLE_Z2_REPLY_INTERRUPT_DATA)
++	if (z2->rx_buf[0] != APPLE_Z2_REPLY_INTERRUPT_DATA) {
++		dev_dbg(&z2->spidev->dev, "EB reply %*ph\n", 16, z2->rx_buf);
+ 		return 0;
++	}
+ 
+ 	pkt_len = (get_unaligned_le16(z2->rx_buf + 1) + 8) & 0xfffffffc;
+ 
+@@ -199,6 +231,8 @@ static int apple_z2_read_packet(struct apple_z2 *z2)
+ 	if (error)
+ 		return error;
+ 
++	dev_dbg(&z2->spidev->dev, "report %zu: %*ph\n", pkt_len,
++		(int)min_t(size_t, pkt_len, 48), z2->rx_buf);
+ 	apple_z2_parse_touches(z2, z2->rx_buf + 5, pkt_len - 5);
+ 
+ 	return 0;
+@@ -281,17 +315,74 @@ static u16 apple_z2_sum8(const u8 *p, size_t len)
+ 	return sum;
+ }
+ 
+-static int apple_z2_hbpp_xfer(struct apple_z2 *z2, const void *tx, void *rx,
+-			      size_t len)
++static const char *apple_z2_hbpp_name(u16 w)
+ {
+-	struct spi_transfer xfer = {
+-		.tx_buf = tx,
+-		.rx_buf = rx,
+-		.len = len,
+-		.bits_per_word = 8,
+-	};
++	switch (w) {
++	case APPLE_Z2_HBPP_NOP:		return "NOP";
++	case APPLE_Z2_HBPP_ATN:		return "ATN";
++	case APPLE_Z2_HBPP_REQ_CAL:	return "REQ_CAL";
++	case APPLE_Z2_HBPP_IDLE:	return "idle";
++	case APPLE_Z2_HBPP_ACK_REG:	return "ACK_REG";
++	case APPLE_Z2_HBPP_ACK_DATA:	return "ACK_DATA";
++	case APPLE_Z2_HBPP_READ_DATA:	return "READ_DATA";
++	case 0x4f81:			return "reject";
++	default:			return "?";
++	}
++}
+ 
+-	return spi_sync_transfer(z2->spidev, &xfer, 1);
++/* dyndbg: every HBPP packet, head and tail for long ones */
++static void apple_z2_hbpp_trace(struct apple_z2 *z2, const char *dir,
++				const char *what, const u8 *buf, size_t len)
++{
++	if (!buf)
++		return;
++	if (len <= 32)
++		dev_dbg(&z2->spidev->dev, "hbpp %s %s (%zu): %*ph\n",
++			dir, what, len, (int)len, buf);
++	else
++		dev_dbg(&z2->spidev->dev, "hbpp %s %s (%zu): %*ph ... %*ph\n",
++			dir, what, len, 24, buf, 8, buf + len - 8);
++}
++
++static int apple_z2_hbpp_xfer(struct apple_z2 *z2, const void *tx, void *rx,
++			      size_t len, const char *what)
++{
++	unsigned int n = DIV_ROUND_UP(len, APPLE_Z2_HBPP_CHUNK), i;
++	u32 hz = hbpp_speed_hz;
++	struct spi_transfer *xfers;
++	struct spi_message msg;
++	int error;
++
++	if (hz && z2->spidev->max_speed_hz && hz > z2->spidev->max_speed_hz)
++		hz = z2->spidev->max_speed_hz;
++
++	apple_z2_hbpp_trace(z2, "tx", what, tx, len);
++
++	xfers = kcalloc(n, sizeof(*xfers), GFP_KERNEL);
++	if (!xfers)
++		return -ENOMEM;
++
++	/* One message, so CS stays asserted over the whole packet */
++	spi_message_init(&msg);
++	for (i = 0; i < n; i++) {
++		size_t off = (size_t)i * APPLE_Z2_HBPP_CHUNK;
++
++		xfers[i].tx_buf = tx ? (const u8 *)tx + off : NULL;
++		xfers[i].rx_buf = rx ? (u8 *)rx + off : NULL;
++		xfers[i].len = min_t(size_t, len - off, APPLE_Z2_HBPP_CHUNK);
++		xfers[i].bits_per_word = 8;
++		xfers[i].speed_hz = hz;
++		spi_message_add_tail(&xfers[i], &msg);
++	}
++	error = spi_sync(z2->spidev, &msg);
++	kfree(xfers);
++	if (error) {
++		dev_err(&z2->spidev->dev, "hbpp %s: spi error %d\n", what, error);
++		return error;
++	}
++
++	apple_z2_hbpp_trace(z2, "rx", what, rx, len);
++	return 0;
+ }
+ 
+ /* Send ATN and return the status word the bootloader answers with */
+@@ -300,19 +391,52 @@ static int apple_z2_hbpp_ack(struct apple_z2 *z2, u16 *status)
+ 	int error;
+ 
+ 	put_unaligned_be16(APPLE_Z2_HBPP_ATN, z2->tx_buf);
+-	error = apple_z2_hbpp_xfer(z2, z2->tx_buf, z2->rx_buf, 2);
++	error = apple_z2_hbpp_xfer(z2, z2->tx_buf, z2->rx_buf, 2, "ATN");
+ 	if (!error)
+ 		*status = get_unaligned_be16(z2->rx_buf);
+ 	return error;
+ }
+ 
++/*
++ * Wait for the status of the last packet. The bootloader has to checksum
++ * (and store) the payload first, so an ATN right behind a long packet can
++ * still see the idle word; poll a few times before giving up. Any other
++ * status is final.
++ */
++static int apple_z2_hbpp_wait_ack(struct apple_z2 *z2, u16 expected,
++				  const char *what)
++{
++	struct device *dev = &z2->spidev->dev;
++	u16 status = 0;
++	int i, error;
++
++	for (i = 0; i < APPLE_Z2_HBPP_ACK_POLLS; i++) {
++		error = apple_z2_hbpp_ack(z2, &status);
++		if (error)
++			return error;
++		dev_dbg(dev, "hbpp %s: status 0x%04x (%s), poll %d\n", what,
++			status, apple_z2_hbpp_name(status), i);
++		if (status == expected)
++			return 0;
++		if (status != APPLE_Z2_HBPP_IDLE && status != APPLE_Z2_HBPP_NOP &&
++		    status != 0x0000 && status != 0xffff) {
++			i++;
++			break;
++		}
++		usleep_range(1000, 1500);
++	}
++	dev_err(dev, "%s: ack 0x%04x (%s) after %d polls, want 0x%04x\n",
++		what, status, apple_z2_hbpp_name(status), i, expected);
++	return -EIO;
++}
++
+ static bool apple_z2_is_hbpp_word(u16 w)
+ {
+ 	switch (w) {
+ 	case APPLE_Z2_HBPP_NOP:
+ 	case APPLE_Z2_HBPP_ATN:
+ 	case APPLE_Z2_HBPP_REQ_CAL:
+-	case 0x4879:
++	case APPLE_Z2_HBPP_IDLE:
+ 	case 0x4969:
+ 	case APPLE_Z2_HBPP_ACK_REG:
+ 	case APPLE_Z2_HBPP_ACK_DATA:
+@@ -332,7 +456,8 @@ static int apple_z2_hbpp_probe(struct apple_z2 *z2, bool *in_hbpp)
+ 	for (i = 2; i < APPLE_Z2_HBPP_PKT_LEN; i += 2)
+ 		put_unaligned_be16(APPLE_Z2_HBPP_NOP, z2->tx_buf + i);
+ 
+-	error = apple_z2_hbpp_xfer(z2, z2->tx_buf, rx, APPLE_Z2_HBPP_PKT_LEN);
++	error = apple_z2_hbpp_xfer(z2, z2->tx_buf, rx, APPLE_Z2_HBPP_PKT_LEN,
++				   in_hbpp ? "check" : "park");
+ 	if (error)
+ 		return error;
+ 
+@@ -342,40 +467,49 @@ static int apple_z2_hbpp_probe(struct apple_z2 *z2, bool *in_hbpp)
+ 		if (!*in_hbpp)
+ 			dev_err(&z2->spidev->dev, "no HBPP response: %*ph\n",
+ 				APPLE_Z2_HBPP_PKT_LEN, rx);
++		else
++			dev_info(&z2->spidev->dev, "HBPP bootloader: %*ph\n",
++				 APPLE_Z2_HBPP_PKT_LEN, rx);
+ 	}
+ 	return 0;
+ }
+ 
+ static int apple_z2_hbpp_read_reg(struct apple_z2 *z2, u32 addr, u32 *val)
+ {
++	struct device *dev = &z2->spidev->dev;
+ 	u8 *rx = z2->rx_buf;
+ 	u8 *p = z2->tx_buf;
++	u16 status, sum;
+ 	int error;
+ 
+ 	put_unaligned_be16(APPLE_Z2_HBPP_MEM_READ, p);
+ 	apple_z2_put_hbpp32(p + 2, addr);
+ 	put_unaligned_be16(apple_z2_sum8(p + 2, 4), p + 6);
+-	error = apple_z2_hbpp_xfer(z2, p, NULL, 8);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, 8, "MEM_READ");
+ 	if (error)
+ 		return error;
+ 
+-	/* Long ATN: the value comes back in words 1 and 2 */
++	/* Long ATN: status 0x4c39, the value in words 1 and 2, then its sum */
+ 	put_unaligned_be16(APPLE_Z2_HBPP_ATN, p);
+ 	put_unaligned_be16(APPLE_Z2_HBPP_NOP, p + 2);
+ 	put_unaligned_be16(APPLE_Z2_HBPP_NOP, p + 4);
+ 	put_unaligned_be16(APPLE_Z2_HBPP_NOP, p + 6);
+-	error = apple_z2_hbpp_xfer(z2, p, rx, 8);
++	error = apple_z2_hbpp_xfer(z2, p, rx, 8, "MEM_READ reply");
+ 	if (error)
+ 		return error;
+ 
++	status = get_unaligned_be16(rx);
++	sum = get_unaligned_be16(rx + 6);
+ 	*val = get_unaligned_be16(rx + 2) | (get_unaligned_be16(rx + 4) << 16);
++	if (status != APPLE_Z2_HBPP_READ_DATA || sum != apple_z2_sum8(rx + 2, 4))
++		dev_warn(dev, "read 0x%08x: unexpected reply %*ph\n", addr, 8, rx);
+ 	return 0;
+ }
+ 
+ static int apple_z2_hbpp_write_reg(struct apple_z2 *z2, u32 addr, u32 val)
+ {
+ 	u8 *p = z2->tx_buf;
+-	u16 status = 0;
++	char what[32];
+ 	int error;
+ 
+ 	put_unaligned_be16(APPLE_Z2_HBPP_REG_WRITE, p);
+@@ -383,19 +517,12 @@ static int apple_z2_hbpp_write_reg(struct apple_z2 *z2, u32 addr, u32 val)
+ 	apple_z2_put_hbpp32(p + 6, 0xffffffff);	/* mask */
+ 	apple_z2_put_hbpp32(p + 10, val);
+ 	put_unaligned_be16(apple_z2_sum8(p + 2, 12), p + 14);
+-	error = apple_z2_hbpp_xfer(z2, p, NULL, APPLE_Z2_HBPP_PKT_LEN);
++	snprintf(what, sizeof(what), "REG_WRITE 0x%08x", addr);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, APPLE_Z2_HBPP_PKT_LEN, what);
+ 	if (error)
+ 		return error;
+ 
+-	error = apple_z2_hbpp_ack(z2, &status);
+-	if (error)
+-		return error;
+-	if (status != APPLE_Z2_HBPP_ACK_REG) {
+-		dev_err(&z2->spidev->dev, "write 0x%08x to 0x%08x: ack 0x%04x\n",
+-			val, addr, status);
+-		return -EIO;
+-	}
+-	return 0;
++	return apple_z2_hbpp_wait_ack(z2, APPLE_Z2_HBPP_ACK_REG, what);
+ }
+ 
+ /*
+@@ -406,7 +533,7 @@ static int apple_z2_hbpp_write_reg(struct apple_z2 *z2, u32 addr, u32 val)
+ static int apple_z2_hbpp_send_blob(struct apple_z2 *z2, const u8 *data,
+ 				   u32 size, bool init)
+ {
+-	u16 status = 0;
++	char what[32];
+ 	u8 *wire;
+ 	u32 i;
+ 	int error;
+@@ -422,20 +549,77 @@ static int apple_z2_hbpp_send_blob(struct apple_z2 *z2, const u8 *data,
+ 			wire[i + 1] = data[i];
+ 		}
+ 	}
+-	error = apple_z2_hbpp_xfer(z2, wire, NULL, size);
++	snprintf(what, sizeof(what), "blob of %u bytes", size);
++	error = apple_z2_hbpp_xfer(z2, wire, NULL, size, what);
+ 	kfree(wire);
+ 	if (error)
+ 		return error;
+ 
+-	error = apple_z2_hbpp_ack(z2, &status);
++	error = apple_z2_hbpp_wait_ack(z2, APPLE_Z2_HBPP_ACK_DATA, what);
++	if (!error)
++		dev_info(&z2->spidev->dev, "%s: acked\n", what);
++	return error;
++}
++
++/*
++ * HBPP DATA packet with the DT calibration, built in wire order:
++ * 30 01 | len/4 | addr lo, addr hi | header sum | payload | sum32 lo, hi.
++ * Same framing as the constructed firmware images (minus their leading NOP).
++ */
++static int apple_z2_hbpp_send_cal(struct apple_z2 *z2, u32 address)
++{
++	struct device *dev = &z2->spidev->dev;
++	size_t len, padded, pkt_len, i;
++	char what[48];
++	u32 sum = 0;
++	u8 *cal, *pkt;
++	int count, error;
++
++	if (!device_property_present(dev, CAL_PROP_NAME)) {
++		dev_warn(dev, "no %s, skipping calibration\n", CAL_PROP_NAME);
++		return 0;
++	}
++	count = device_property_count_u8(dev, CAL_PROP_NAME);
++	if (count <= 0)
++		return count ? count : -EINVAL;
++	len = count;
++	padded = round_up(len, 4);
++	pkt_len = APPLE_Z2_HBPP_DATA_HDR_LEN + padded + 4;
++
++	u8 *buf __free(kfree) = kzalloc(pkt_len + padded, GFP_KERNEL);
++	if (!buf)
++		return -ENOMEM;
++	pkt = buf;
++	cal = buf + pkt_len;
++	error = device_property_read_u8_array(dev, CAL_PROP_NAME, cal, len);
+ 	if (error)
+ 		return error;
+-	if (status != APPLE_Z2_HBPP_ACK_DATA) {
+-		dev_err(&z2->spidev->dev, "blob of %u bytes: ack 0x%04x\n",
+-			size, status);
+-		return -EIO;
++
++	put_unaligned_be16(APPLE_Z2_HBPP_CMD_BLOB, pkt);
++	put_unaligned_be16(padded / 4, pkt + 2);
++	apple_z2_put_hbpp32(pkt + 4, address);
++	put_unaligned_be16(apple_z2_sum8(pkt + 2, 6), pkt + 8);
++	for (i = 0; i < padded; i += 2) {
++		u8 *w = pkt + APPLE_Z2_HBPP_DATA_HDR_LEN + i;
++
++		w[0] = hbpp_cal_swap ? cal[i + 1] : cal[i];
++		w[1] = hbpp_cal_swap ? cal[i] : cal[i + 1];
++		sum += cal[i] + cal[i + 1];
+ 	}
+-	return 0;
++	apple_z2_put_hbpp32(pkt + APPLE_Z2_HBPP_DATA_HDR_LEN + padded, sum);
++
++	snprintf(what, sizeof(what), "calibration %zu bytes to 0x%08x", pkt_len,
++		 address);
++	dev_dbg(dev, "%s: payload %zu, sum 0x%08x, swap %d\n", what, len, sum,
++		hbpp_cal_swap);
++	error = apple_z2_hbpp_xfer(z2, pkt, NULL, pkt_len, what);
++	if (error)
++		return error;
++
++	error = apple_z2_hbpp_wait_ack(z2, APPLE_Z2_HBPP_ACK_DATA, what);
++	if (!error)
++		dev_info(dev, "%s: acked\n", what);
++	return error;
+ }
+ 
+ /* Clock/FLL setup, calibration request and jump into the firmware */
+@@ -474,24 +658,26 @@ static int apple_z2_hbpp_start(struct apple_z2 *z2)
+ 	}
+ 
+ 	put_unaligned_be16(APPLE_Z2_HBPP_REQ_CAL, p);
+-	error = apple_z2_hbpp_xfer(z2, p, NULL, 2);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, 2, "REQ_CAL");
+ 	if (error)
+ 		return error;
+ 	msleep(v->calib_wait_ms);
+ 	error = apple_z2_hbpp_ack(z2, &status);
+ 	if (error)
+ 		return error;
+-	dev_dbg(dev, "calibration done, status 0x%04x\n", status);
++	dev_info(dev, "calibration request done, status 0x%04x (%s)\n", status,
++		 apple_z2_hbpp_name(status));
+ 
+ 	put_unaligned_be16(APPLE_Z2_HBPP_EXECUTE, p);
+ 	apple_z2_put_hbpp32(p + 2, v->exec_addr);
+ 	apple_z2_put_hbpp32(p + 6, 1);
+ 	put_unaligned_be16(apple_z2_sum8(p + 2, 8), p + 10);
+-	error = apple_z2_hbpp_xfer(z2, p, NULL, 12);
++	error = apple_z2_hbpp_xfer(z2, p, NULL, 12, "EXECUTE");
+ 	if (error)
+ 		return error;
+ 
+ 	msleep(40);
++	dev_info(dev, "firmware started at 0x%08x\n", v->exec_addr);
+ 	return 0;
+ }
+ 
+@@ -585,6 +771,14 @@ static int apple_z2_upload_firmware(struct apple_z2 *z2)
+ 			address = le32_to_cpup((__force __le32 *)(fw->data + fw_idx));
+ 			fw_idx += sizeof(u32);
+ 
++			if (z2->variant && z2->variant->hbpp) {
++				error = apple_z2_hbpp_send_cal(z2, address);
++				if (error)
++					return error;
++				fw_idx = round_up(fw_idx, 4);
++				continue;
++			}
++
+ 			const u8 *data __free(kfree) =
+ 				apple_z2_build_cal_blob(z2, address, &size);
+ 			if (IS_ERR(data))
+@@ -752,6 +946,30 @@ static int apple_z2_probe(struct spi_device *spi)
+ 	init_completion(&z2->boot_irq);
+ 	spi_set_drvdata(spi, z2);
+ 
++	/*
++	 * The bootloader needs the ADT chip select setup/hold times; they
++	 * were not applied when the DT (or an overlay applied after the SPI
++	 * device was created) did not carry spi-cs-*-delay-ns.
++	 */
++	if (z2->variant && z2->variant->hbpp) {
++		if (!spi->cs_setup.value && z2->variant->cs_setup_ns) {
++			spi->cs_setup.value = z2->variant->cs_setup_ns;
++			spi->cs_setup.unit = SPI_DELAY_UNIT_NSECS;
++		}
++		if (!spi->cs_hold.value && z2->variant->cs_hold_ns) {
++			spi->cs_hold.value = z2->variant->cs_hold_ns;
++			spi->cs_hold.unit = SPI_DELAY_UNIT_NSECS;
++		}
++		error = spi_setup(spi);
++		if (error)
++			return dev_err_probe(dev, error, "spi setup\n");
++		dev_info(dev, "HBPP at %u Hz (run %u Hz), mode %u, CS setup %u hold %u ns\n",
++			 hbpp_speed_hz ? min(hbpp_speed_hz, spi->max_speed_hz) :
++			 spi->max_speed_hz, spi->max_speed_hz,
++			 (unsigned int)(spi->mode & SPI_MODE_X_MASK),
++			 spi->cs_setup.value, spi->cs_hold.value);
++	}
++
+ 	/* Reset the device on boot */
+ 	z2->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
+ 	if (IS_ERR(z2->reset_gpio))
+@@ -871,6 +1089,8 @@ static const struct apple_z2_variant apple_z2_n71 = {
+ 	.num_post_regs = ARRAY_SIZE(apple_z2_n71_post_regs),
+ 	.calib_wait_ms = 65,
+ 	.exec_addr = 0x10003400,
++	.cs_setup_ns = 5000,
++	.cs_hold_ns = 10000,
+ };
+ 
+ static const struct of_device_id apple_z2_of_match[] = {
+-- 
+2.55.0
+

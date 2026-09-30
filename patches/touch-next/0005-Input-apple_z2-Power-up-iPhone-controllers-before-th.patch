@@ -1,0 +1,196 @@
+From 4f9d97dc6b1b212ef5f71d8e8d70e55c19818cef Mon Sep 17 00:00:00 2001
+From: modpunk <27315771+modpunk@users.noreply.github.com>
+Date: Tue, 29 Sep 2026 20:01:30 -0500
+Subject: [PATCH 5/8] Input: apple_z2: Power up iPhone controllers before the
+ HBPP boot
+
+Take optional vdd (core) and avdd (analog) supplies and a reference
+clock. For the HBPP (iPhone) variant, power up with reset held: analog
+supply, 2-5 ms, core supply, 2-5 ms, reference clock, 1-2 ms, then the
+existing boot sequence; power off in the same reverse order when the boot
+fails, on shutdown and on suspend. This is the order Corellium's iPhone 7
+touch driver uses for the same pair of rails.
+
+All three are optional. When one is not described (or CONFIG_REGULATOR
+is off) it is assumed to have been left on by the bootloader, so the
+touch bar variants are unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../touchscreen/apple,z2-multitouch.yaml      | 10 ++
+ drivers/input/touchscreen/apple_z2.c          | 91 ++++++++++++++++++-
+ 2 files changed, 100 insertions(+), 1 deletion(-)
+
+diff --git a/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml b/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml
+index 3b4cf2d5de40..df5022d869b1 100644
+--- a/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml
++++ b/Documentation/devicetree/bindings/input/touchscreen/apple,z2-multitouch.yaml
+@@ -31,6 +31,16 @@ properties:
+   firmware-name:
+     maxItems: 1
+ 
++  vdd-supply:
++    description: Controller core supply
++
++  avdd-supply:
++    description: Controller analog supply
++
++  clocks:
++    maxItems: 1
++    description: 32.768 kHz reference clock
++
+   apple,z2-cal-blob:
+     $ref: /schemas/types.yaml#/definitions/uint8-array
+     maxItems: 4096
+diff --git a/drivers/input/touchscreen/apple_z2.c b/drivers/input/touchscreen/apple_z2.c
+index edd53c043371..54bf61716ad2 100644
+--- a/drivers/input/touchscreen/apple_z2.c
++++ b/drivers/input/touchscreen/apple_z2.c
+@@ -5,6 +5,7 @@
+  * Copyright (C) The Asahi Linux Contributors
+  */
+ 
++#include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/firmware.h>
+ #include <linux/input.h>
+@@ -13,6 +14,7 @@
+ #include <linux/interrupt.h>
+ #include <linux/module.h>
+ #include <linux/of.h>
++#include <linux/regulator/consumer.h>
+ #include <linux/spi/spi.h>
+ #include <linux/unaligned.h>
+ 
+@@ -78,6 +80,11 @@ struct apple_z2 {
+ 	struct touchscreen_properties props;
+ 	const char *fw_name;
+ 	const struct apple_z2_variant *variant;
++	/* Optional supplies and 32 kHz reference (iPhone) */
++	struct regulator *vdd;
++	struct regulator *avdd;
++	struct clk *clk;
++	bool powered;
+ 	u8 *tx_buf;
+ 	u8 *rx_buf;
+ };
+@@ -607,11 +614,76 @@ static int apple_z2_upload_firmware(struct apple_z2 *z2)
+ 	return 0;
+ }
+ 
++static void apple_z2_power_off(struct apple_z2 *z2)
++{
++	if (!z2->powered)
++		return;
++	gpiod_set_value_cansleep(z2->reset_gpio, 1);
++	usleep_range(1000, 2000);
++	clk_disable_unprepare(z2->clk);
++	if (z2->vdd)
++		regulator_disable(z2->vdd);
++	usleep_range(1000, 2000);
++	if (z2->avdd)
++		regulator_disable(z2->avdd);
++	z2->powered = false;
++}
++
++/*
++ * Power up with reset held: analog supply, core supply, then the 32 kHz
++ * reference. This is the order Corellium's iPhone 7 driver uses for the
++ * same pair of rails (display PMU analog switch, main PMU core switch).
++ * Every resource is optional; a missing one is assumed to have been left
++ * on by the bootloader.
++ */
++static int apple_z2_power_on(struct apple_z2 *z2)
++{
++	struct device *dev = &z2->spidev->dev;
++	int error;
++
++	if (z2->powered)
++		return 0;
++
++	gpiod_set_value_cansleep(z2->reset_gpio, 1);
++	if (z2->avdd) {
++		error = regulator_enable(z2->avdd);
++		if (error)
++			return dev_err_probe(dev, error, "analog supply\n");
++		usleep_range(2000, 5000);
++	}
++	if (z2->vdd) {
++		error = regulator_enable(z2->vdd);
++		if (error)
++			goto err_avdd;
++		usleep_range(2000, 5000);
++	}
++	error = clk_prepare_enable(z2->clk);
++	if (error)
++		goto err_vdd;
++	if (z2->clk)
++		dev_dbg(dev, "reference clock %lu Hz\n", clk_get_rate(z2->clk));
++	usleep_range(1000, 2000);
++	z2->powered = true;
++	return 0;
++
++err_vdd:
++	if (z2->vdd)
++		regulator_disable(z2->vdd);
++err_avdd:
++	if (z2->avdd)
++		regulator_disable(z2->avdd);
++	return dev_err_probe(dev, error, "power on\n");
++}
++
+ static int apple_z2_boot_hbpp(struct apple_z2 *z2)
+ {
+ 	bool in_hbpp = false;
+ 	int error;
+ 
++	error = apple_z2_power_on(z2);
++	if (error)
++		return error;
++
+ 	/* Clock out ATN/NOPs while in reset so SCK idles high (mode 3) */
+ 	error = apple_z2_hbpp_probe(z2, NULL);
+ 	if (error)
+@@ -629,7 +701,7 @@ static int apple_z2_boot_hbpp(struct apple_z2 *z2)
+ 		if (z2->booted)
+ 			disable_irq(z2->spidev->irq);
+ 		z2->booted = false;
+-		gpiod_set_value(z2->reset_gpio, 1);
++		apple_z2_power_off(z2);
+ 	}
+ 	return error;
+ }
+@@ -685,6 +757,22 @@ static int apple_z2_probe(struct spi_device *spi)
+ 	if (IS_ERR(z2->reset_gpio))
+ 		return dev_err_probe(dev, PTR_ERR(z2->reset_gpio), "unable to get reset\n");
+ 
++	z2->vdd = devm_regulator_get_optional(dev, "vdd");
++	if (IS_ERR(z2->vdd)) {
++		if (PTR_ERR(z2->vdd) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(z2->vdd), "vdd supply\n");
++		z2->vdd = NULL;
++	}
++	z2->avdd = devm_regulator_get_optional(dev, "avdd");
++	if (IS_ERR(z2->avdd)) {
++		if (PTR_ERR(z2->avdd) != -ENODEV)
++			return dev_err_probe(dev, PTR_ERR(z2->avdd), "avdd supply\n");
++		z2->avdd = NULL;
++	}
++	z2->clk = devm_clk_get_optional(dev, NULL);
++	if (IS_ERR(z2->clk))
++		return dev_err_probe(dev, PTR_ERR(z2->clk), "reference clock\n");
++
+ 	error = devm_request_threaded_irq(dev, z2->spidev->irq, NULL, apple_z2_irq,
+ 					  IRQF_ONESHOT | IRQF_NO_AUTOEN,
+ 					  "apple-z2-irq", z2);
+@@ -739,6 +827,7 @@ static void apple_z2_shutdown(struct spi_device *spi)
+ 	disable_irq(z2->spidev->irq);
+ 	gpiod_direction_output(z2->reset_gpio, 1);
+ 	z2->booted = false;
++	apple_z2_power_off(z2);
+ }
+ 
+ static int apple_z2_suspend(struct device *dev)
+-- 
+2.55.0
+

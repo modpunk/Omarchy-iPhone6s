@@ -1,0 +1,40 @@
+From 9ffac47ae2ba01a647246d8a934cd7b6f6928433 Mon Sep 17 00:00:00 2001
+From: kingmk3r <kingmk3r@katari.ai>
+Date: Tue, 29 Sep 2026 20:45:22 -0500
+Subject: [PATCH 7/8] Input: apple_z2: Don't pad the calibration packet header
+
+struct apple_z2_hbpp_blob_hdr is 10 bytes on the wire (0x3001, length in
+words, 32-bit address, 16-bit header sum), but without __packed the
+compiler rounds it up to 12. apple_z2_build_cal_blob() uses sizeof(), so
+the calibration DATA packet carried two zero bytes between the header
+sum and the payload: the controller then takes those two bytes as the
+start of the payload and the last payload bytes plus half of the sum as
+the 32-bit checksum.
+
+The firmware blobs built by the Asahi Z2FW generator
+(asahi_firmware/multitouch.py: pkt_len = 14 + len(payload)) and Apple's
+preconstructed iPhone images both use the 10-byte header. The touch bar
+never checks the bootloader status, which hid this; the iPhone 6s
+bootloader rejects the packet (status 0x4f81 instead of 0x4bc1).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/input/touchscreen/apple_z2.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/input/touchscreen/apple_z2.c b/drivers/input/touchscreen/apple_z2.c
+index 54bf61716ad2..ab9fe0c77c1c 100644
+--- a/drivers/input/touchscreen/apple_z2.c
++++ b/drivers/input/touchscreen/apple_z2.c
+@@ -112,7 +112,7 @@ struct apple_z2_hbpp_blob_hdr {
+ 	__le16 len;
+ 	__le32 addr;
+ 	__le16 checksum;
+-};
++} __packed;	/* 10 bytes, as in the Asahi Z2FW generator and Apple's images */
+ 
+ struct apple_z2_fw_hdr {
+ 	__le32 magic;
+-- 
+2.55.0
+
