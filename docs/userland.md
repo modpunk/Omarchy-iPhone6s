@@ -63,18 +63,21 @@ that cutover doesn't also have to remember to retrofit a firewall and address bi
 
 | # | area | what changed | file(s) |
 |---|---|---|---|
-| F7 | sshd | `ListenAddress 172.16.42.1`: binds the USB address only, so sshd doesn't start answering on Wi-Fi the day another interface exists | `overlay/etc/ssh/sshd_config.d/10-phone.conf` |
-| F8 | deploy listeners | the `nc -l` listeners used by push/deploy and the testkit (`stage2.sh recv`, `phone.sh push`) bind explicitly to `172.16.42.1` (`-s`), not all interfaces | `phone/stage2.sh`, `../../testkit/phone.sh` |
-| F9 | firewall | `nftables`, default-deny inbound: `lo` and `usb0` accepted, established/related accepted, everything else dropped (including any future `wlan0`). Enabled by default | `overlay/etc/nftables.conf`, `nftables.service` enabled in `build-rootfs.sh` |
+| F7 | sshd | `ListenAddress 172.16.42.1`: binds the USB address only, so sshd doesn't start answering on Wi-Fi the day another interface exists. A drop-in orders it after `systemd-networkd.service` with a 2 s restart backoff (matching `phone-telnetd.service`'s existing pattern for the same address), belt-and-suspenders: in practice usb0 already has that address before `sshd` ever starts (the ramdisk sets it before `switch_root`, `10-usb-gadget.network`'s `KeepConfiguration=yes` keeps it) | `overlay/etc/ssh/sshd_config.d/10-phone.conf`, `overlay/etc/systemd/system/sshd.service.d/10-phone.conf` |
+| F8 | deploy listeners | the `nc -l` listeners used by push/deploy and the testkit (`stage2.sh recv`, `phone.sh push`) bind explicitly to `172.16.42.1` (`-s`). Checked against the actual HoolockLinux ramdisk's busybox (musl, 1.38.0, extracted from `initramfs/initramfs.gz`), not just the build host's: its `nc` applet has `-s` | `phone/stage2.sh`, `../../testkit/phone.sh` |
+| F9 | firewall | `nftables`, default-deny inbound: `lo` and `usb0` accepted, established/related accepted, everything else dropped (including any future `wlan0`). Enabled by default. The kernel (`KBUILD/.config`) has `NETFILTER`/`NF_TABLES`/`NF_TABLES_INET` built in (`=y`, not modules), so there's no module-autoload gap for it to fail open into | `overlay/etc/nftables.conf`, `nftables.service` enabled in `build-rootfs.sh` |
 | F11 | supply chain | `archlinuxarm-keyring` (the trust root for every later pacman signature) is checksum-pinned (`KEYRING_SHA256` in `build-rootfs.sh`) and the build refuses to continue on a mismatch, instead of trusting whatever the plaintext-HTTP mirror hands back on first use. ALARM's mirror network has no working per-mirror HTTPS (checked: geo-mirrors either refuse TLS or serve a certificate for a different hostname), so the checksum is the actual control, not the transport | `build-rootfs.sh` (`stage_install`), `pacman-alarm.conf` (comment) |
 | -- | sudo | `wheel` requires the account password (`NOPASSWD` removed). Checked against the pinned Omarchy Phone shell/app revisions: `phone-hyprland`, `ophone-sys` and the `omarchy-phone-session` unit never call `sudo` (group membership + logind/polkit cover reboot/poweroff/suspend, brightness, etc.), so nothing needed a narrow carve-out | `overlay/etc/sudoers.d/10-wheel` |
 | F19-adj | root telnet | `phone-telnetd` (passwordless root telnet on the USB link, used by `testkit/phone.sh`/`phone.py` after `switch_root`) is opt-in at build time: `ENABLE_TELNETD=1` (default) enables it, `ENABLE_TELNETD=0` leaves it disabled. Default stays on because the dev workflow (`phone.sh ping`, `phone.sh lock`) depends on it; turn it off for anything beyond bench dev, since it's still unauthenticated root | `build-rootfs.sh`, `overlay/etc/systemd/system/phone-telnetd.service` |
 | F15 | secrets in build | `USERPASS` goes to `openssl passwd -6 -stdin`, not argv -- a process argv is visible to any other local user on the build host via `ps` for the life of the call, stdin isn't | `build-rootfs.sh` (`stage_config`) |
 | F17 | secrets lifecycle | `stage2.sh`'s `carry()` (which sweeps small files from `/tmp/6s` into `/var/lib/6s-testkit/` on the new root after `switch_root`) now excludes `bt-address`/`bt-keys.tgz` by name, same as it already excluded `unpack.*` | `phone/stage2.sh` |
 
-`check-rootfs.sh` verifies all of the above except F11 (which is a build-time gate, not
-something to re-check from the packed rootfs -- a build that got past `stage_install`
-already proved the checksum matched).
+`check-rootfs.sh` verifies all of the above except F11 (a build-time gate, not something to
+re-check from the packed rootfs -- a build that got past `stage_install` already proved the
+checksum matched; also checks `KBUILD/.config` for kernel-side `nftables` support). F11 was
+exercised directly: with `$OUT/gnupg` removed, a wrong `KEYRING_SHA256` makes `stage_install`
+`die` before `pacman-key --populate` ever runs, and the real pin matches the cached
+`archlinuxarm-keyring-20240419-2` package's actual sha256.
 
 Left for later (see the P1/P2 list in security-review.md): a real per-build gate against
 shipping the default `USERPASS=omarchy` (F1), narrowing the baked-in SSH keys to one
@@ -439,6 +442,7 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/overlay/etc/modules-load.d/`, `modprobe.d/` | phone | driver load order and the gauge softdep |
 | `tools/userland/overlay/etc/systemd/system/omarchy-phone-bt-{keys,address}.service`, `overlay/usr/lib/phone-tk/bt-address` | phone | Bluetooth pairing restore and public address |
 | `tools/userland/overlay/etc/nftables.conf` | phone | default-deny inbound firewall (`lo` + `usb0` only, see "Security") |
+| `tools/userland/overlay/etc/systemd/system/sshd.service.d/10-phone.conf` | phone | orders sshd after `usb0`, matches `phone-telnetd.service`'s restart backoff (see "Security", F7) |
 | `tools/userland/overlay/etc/systemd/user/omarchy-phone-session.service`, `overlay/usr/lib/phone-tk/wait-display` | phone | starts the phone session at boot |
 | `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `timezone`, `go`, `nsboot` |
 | `tools/userland/phone/userland-switch.sh` | phone (PID 1) | sourced by the patched `/init` |

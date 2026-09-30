@@ -194,6 +194,8 @@ printf '  %-28s ' "tzdata (zoneinfo)"
 echo "== security (security-review.md P0 + cheap P1) =="
 printf '  %-28s ' "sshd ListenAddress (F7)"
 grep -qx 'ListenAddress 172.16.42.1' "$ROOT/etc/ssh/sshd_config.d/10-phone.conf" 2>/dev/null && echo ok || echo "NO: missing from 10-phone.conf"
+printf '  %-28s ' "sshd ordered after usb0"
+[ -s "$ROOT/etc/systemd/system/sshd.service.d/10-phone.conf" ] && echo ok || echo "NO: sshd.service.d/10-phone.conf missing"
 printf '  %-28s ' "wheel sudo needs a password"
 if [ -s "$ROOT/etc/sudoers.d/10-wheel" ]; then
 	# Only the active rule line matters -- the file's own comments talk about
@@ -224,6 +226,22 @@ else
 fi
 printf '  %-28s ' "nftables.service enabled"
 [ -L "$ROOT/etc/systemd/system/multi-user.target.wants/nftables.service" ] && echo yes || echo "NO"
+printf '  %-28s ' "kernel nf_tables support"
+if [ -n "${KBUILD:-}" ] && [ -s "$KBUILD/.config" ]; then
+	missing=""
+	for c in CONFIG_NETFILTER CONFIG_NF_TABLES CONFIG_NF_TABLES_INET; do
+		grep -q "^$c=y" "$KBUILD/.config" || missing="$missing $c"
+	done
+	# =m would also work (nftables.service would need modprobe/softdep to load
+	# it first, which nothing here sets up), so call that out separately.
+	if [ -z "$missing" ]; then echo "ok (built in)"
+	else
+		mods=""; for c in $missing; do grep -q "^$c=m" "$KBUILD/.config" && mods="$mods $c"; done
+		[ -n "$mods" ] && echo "NO: module only, no autoload set up:$mods" || echo "NO: not configured:$missing"
+	fi
+else
+	echo "skipped (no \$KBUILD/.config)"
+fi
 printf '  %-28s ' "phone-telnetd enabled (F19)"
 if [ -L "$ROOT/etc/systemd/system/multi-user.target.wants/phone-telnetd.service" ]; then
 	echo "yes (ENABLE_TELNETD=1, dev default -- opt out with ENABLE_TELNETD=0)"
