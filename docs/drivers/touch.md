@@ -1,11 +1,28 @@
 # Touch (iPhone 6s N71 multitouch on spi2)
 
-**Status:** partial (build-verified; dt_binding_check and dtbs_check clean for n71/n71m/n66 with dtschema 2026.9). The SPI controller driver, DT and apple_z2 iPhone variant are written and
-build clean (W=1, dtbs). **Nothing has run on the phone yet.** The one overlay attempt hung
-because the kernel was already wedged by an unrelated overlay-remove oops, and phone tests were
-paused. The protocol is identified from iOS static analysis. No touch events have been seen.
+**Status: concluded, parked (2026-09-30).** Live testing is done. The controller boots over
+HBPP, and the full plumbing works end to end: finger down -> IRQ -> two-phase SPI report read
+-> decode path, with `BTN_TOUCH` auto-firing through input-mt's pointer emulation once the
+per-finger slot path runs (`INPUT_MT_DIRECT` emits it unconditionally from
+`input_mt_sync_frame`, confirmed by reading `input-mt.c`; earlier zero-`BTN_TOUCH` readings were
+a symptom of the locate step failing, not a missing feature). **But the controller, as
+initialized by this driver, only ever emits a COARSE report:** the frame's payload-length field
+is hardcoded `0x0002` in every capture, which leaves about one bit of position per axis (screen
+quadrant) plus a touch-onset settle counter — there is no full-resolution X/Y anywhere in the
+report. Three live firmware-mode experiments to unlock a richer report were all negative (see
+"Live-test results" below). Full-resolution touch needs an unknown vendor firmware command
+outside the driver's reverse-engineered command table; reaching it needs either observing iOS's
+own init sequence or blind command fuzzing (brick risk on a tethered, no-recovery-partition
+device). Touch is **parked**: coarse/quadrant position works, usable high-resolution touch does
+not exist yet. PR #19 (`touch-next`, the branch all of this was tested on) stays open and
+unmerged.
 
-Patches: `patches/touch/` (6 patches, `git am` onto `6831bc701` on their own, checked).
+Patches: `patches/touch/` (6 patches, `git am` onto `6831bc701` on their own, checked) cover the
+SPI controller, DT and the original apple_z2 iPhone variant, and are build-only (CI never boots
+the phone — see `docs/CI.md`). The live results below were obtained with a much more iterated
+HBPP-path driver developed on the unmerged `6s/touch-next` branch (PR #19): the power/clock
+bring-up (32 kHz touch clock, Chestnut analog rail, PMU switches) and the report-read fixes that
+made finger detection possible live only on that branch, not in `patches/touch/`.
 
 ## What
 
@@ -73,8 +90,13 @@ Evidence for Z2:
   7. request calibration, wait 65 ms
   8. EXECUTE, then 40 ms
 
-Evidence against or open: the post-boot report layout (touch bar parser reused) and the raw
-coordinate range are unverified. The analog rail is off.
+Resolved by live testing (see "Live-test results" below): the post-boot report is **not** the
+touch bar's `EA`/`EB` frame — N71 has its own frame format (`e0 00 02 00 ...` header, an 18-byte
+per-finger record, then a static footer), and the live-observed length field caps the real
+payload at 2 bytes regardless of the announced frame size, so no raw coordinate range was ever
+recoverable from it. The analog rail being off (below) was the pre-bring-up, iBoot-left state;
+the live results required completing power/clock bring-up (Chestnut analog rail on, 32 kHz
+touch clock enabled) on the `6s/touch-next` branch, not in the `patches/touch/` series below.
 
 ## Firmware and calibration (never committed)
 
@@ -84,7 +106,10 @@ coordinate range are unverified. The analog rail is off.
 - `tools/touch/adt-touch-cal.py <runtime-adt>` prints `apple,z2-cal-blob` from the runtime ADT
   (`/dev/mtd1ro`, 1024 bytes, device unique). The IPSW ADT only has the syscfg placeholder.
 
-## Live-test plan (after reboot; nothing below has run yet)
+## Original live-test plan (as designed, before the first boot)
+
+This was the plan going in; all of it has since been executed (and then far exceeded — see
+"Live-test results" right below). Kept for history.
 
 1. Confirm `ps_spi2` phandle 0xf039 (fnd_phandle). Load `tools/touch/live-test/ttpwr_v1.c`
    (read-only rail report plus spi2 domain), then `tspis_v1` (the S5L driver).
@@ -102,6 +127,40 @@ coordinate range are unverified. The analog rail is off.
    and orientation (it may be inverted or scaled against 750x1334), and that BTN_TOUCH/slot
    release on lift.
 
+## Live-test results (concluded 2026-09-30)
+
+Extensive live testing on the `6s/touch-next` branch (PR #19, unmerged — a long chain of driver
+iterations well past the original 6-patch series) got the controller fully booting and
+reporting:
+
+- **Plumbing confirmed working end to end:** finger down -> IRQ -> two-phase SPI report read
+  (the N71-specific frame, not the touch bar's `EA`/`EB`) -> decode path. `BTN_TOUCH` auto-fires
+  via input-mt's pointer emulation once the per-finger slot path runs — confirmed by reading
+  `input-mt.c` (`INPUT_MT_DIRECT` always emits it from `input_mt_sync_frame`); the earlier
+  zero-`BTN_TOUCH` readings were a symptom of the locate step failing on most reads, not a
+  missing feature.
+- **The report is coarse only.** Across every captured frame (idle and finger-present, multiple
+  sessions), the frame's payload-length field is hardcoded `0x0002`. Only two bits in the
+  18-byte per-finger record move with finger position at all (`record[4]` bits 4 and 5 — the
+  X and Y quadrant MSBs), giving roughly one bit of resolution per axis (which screen quadrant),
+  plus a touch-onset settle counter that decays after contact and was originally mistaken for
+  motion data. No full-resolution X/Y field exists anywhere in the 91-byte frame (header,
+  record, or the previously-unlogged tail bytes 64-90, which turned out to be a static footer).
+- **Three live firmware-mode experiments, all negative:**
+  1. `post_boot_cmd=1` (send the `19 c1` probe after boot) — acked, report stayed coarse.
+  2. `post_boot_cmd=2` (also an `EE` config packet in `EB` framing) — acked, report stayed
+     coarse.
+  3. `report_len=256 report_overread=1` (read far past the announced length) — the extra bytes
+     were dummy fill identical to the static footer; not an under-read.
+- **Conclusion:** the controller, as initialized via HoolockLinux's HBPP path, will not emit
+  more than a coarse/quadrant report through any command in the driver's reverse-engineered
+  table. Full-resolution touch needs an unknown vendor firmware mode command — finding it needs
+  either observing iOS's own touch-controller init sequence or blind command fuzzing, which
+  carries brick risk on this tethered, no-recovery-partition device. **Touch is parked** at
+  "coarse/quadrant position works; usable high-resolution touch not yet achievable." PR #19
+  stays open and unmerged; do not merge it as "touch working" until (or unless) high-resolution
+  decode is solved.
+
 ## Provenance
 
 | fact | source |
@@ -113,11 +172,15 @@ coordinate range are unverified. The analog rail is off.
 | `multi-touch-calibration` (1024 B) and orb/prox cal values | runtime ADT from `/dev/mtd1ro` (device unique, not published) |
 | PMGR index to ps_spi2 (0x801c8) | ADT pmgr `devices` table, cross-checked with foundation |
 | SCK/MOSI/MISO = GPIO 41-43 func 1, CS 44 func 1, reset 75 = output low | live read-only pin-register dump (`tpindump1`) |
-| LDO26 on (0x319=01), Chestnut 0x05 = 0x0f (touch analog off) | live read-only PMU/i2c reads (`ttpwr_v1`) |
+| LDO26 on (0x319=01), Chestnut 0x05 = 0x0f (touch analog off, pre-bring-up iBoot state) | live read-only PMU/i2c reads (`ttpwr_v1`) |
+| Coarse-only report (length field hardcoded 0x0002), quadrant-only position bits, 3 negative firmware-mode experiments, HBPP-path plumbing (IRQ/decode/`BTN_TOUCH`) confirmed working | live SPI capture and decode analysis, 2026-09-30 investigation on `6s/touch-next` (PR #19, unmerged) |
 | LDO index 0x19 -> reg 0x319, Chestnut select 2 -> reg 0x05 bit4 | iOS `AppleD2255PMU` LDO table and `AppleChestnutDisplayPMU::setLDO`, static disassembly |
 | `Z2Compliant`, N1 addresses (fll, ref-clk-div, clk32, cal-dl, prox-cal, fw-execute) | iOS kernelcache `__PRELINK_INFO`, `AppleMultitouchSPIN71` personality |
 | HBPP packet ids, ack codes, N1 boot order, MemRead/RegWrite/EXECUTE formats | iOS `AppleMultitouchSPI` kext (`MTSPIBootloader_Z2/_N1`, `AppleMultitouchZ2SPI`), static disassembly |
 | constructed firmware images, `PreconstructedBootloadPacketType=Z2`, version 0x0670.mihu | IPSW rootfs `/usr/share/firmware/multitouch/N71.mtprops` (checksums checked by the extractor) |
 | Z2FW container, touch bar packet layouts (0x3001 DATA, 0x1e33 RMW, 0x1f01), EB/E1 report read | Asahi `asahi_firmware/multitouch.py` and upstream `apple_z2.c` (public) |
 
-Nothing in this document comes from live SPI traffic yet.
+The hardware/protocol identification above (SPI register usage, HBPP packet formats, ADT
+facts) comes from static analysis, as noted per-row in the table above. The report-format and
+resolution findings in "Live-test results" come from live SPI traffic captured on the phone on
+2026-09-30.

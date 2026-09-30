@@ -24,7 +24,7 @@ read with `tools/adt2.py` (see `tools/README.md` to extract your own), the runni
 | uart5 | 0x20a0d4000   | 197     | 85        | works (`serial5`, battery gauge) |
 | uart6 | 0x20a0d8000   | 198     | 86        | in progress (`serial6`, iAP / Lightning accessories) |
 | spi1  | 0x20a084000   | 189     | 75        | not yet (`spi1`) |
-| spi2  | 0x20a088000   | 190     | 76        | in progress (`spi2`, touch) |
+| spi2  | 0x20a088000   | 190     | 76        | works (`spi2`, controller + HBPP boot); touch itself: coarse/quadrant position works, full-resolution blocked on firmware-mode RE — parked |
 | spi3  | 0x20a08c000   | 191     | 77        | not yet (`spi3`) |
 | i2c0  | 0x20a110000   | 206     | -         | works (`i2c-apple`, PMIC) |
 | i2c1  | 0x20a111000   | 207     | -         | in progress (SN2400 charger HDQ line-switch handover works; other i2c1 devices not yet) |
@@ -50,7 +50,7 @@ by register offset. Labels `serial1`..`serial6` and `spi1`..`spi3` are fixed so 
 | Bluetooth | `uart1/bluetooth` (`bluetooth,n88`) | uart1 | USI 339S00043 (Broadcom BCM4350) | works (`hci_bcm` serdev; adv-report-type quirk fix makes LE keyboard pairing succeed; firmware extracted locally, never committed) |
 | Wi-Fi | `apcie/pci-bridge1/wlan` (`wlan-pcie,bcm4350`) | PCIe port 1 | USI 339S00043 (Broadcom BCM4350) | in progress (needs PCIe; `brcmfmac`) |
 | Storage | `apcie/pci-bridge0/s3e`, `nvme-mmu0` | PCIe port 0 | Toshiba THGBX5G7D2KLFXG 16 GB NAND, Apple ANS2 NVMe | in progress, **read-only** (holds iOS) |
-| Touch | `spi2/multi-touch` (`multi-touch,n71,2`) | spi2 | 343S00014 (3D Touch), Apple multitouch | in progress (protocol vs `apple_z2` unverified) |
+| Touch | `spi2/multi-touch` (`multi-touch,n71,2`) | spi2 | 343S00014 (3D Touch), Apple multitouch | coarse/quadrant position works; full-resolution blocked on firmware-mode RE — parked (see `docs/drivers/touch.md`) |
 | Touch ID | `spi3/mesa` (`biosensor,mesa`) | spi3 | Apple Mesa | out of scope (SEP) |
 | Audio codec | `spi1/audio-codec` (`audio-control,cs42l71`), `mca0` | spi1 + I2S | Cirrus 338S00105 (CS42L71) | out of scope |
 | Speaker amp | `i2c1/audio-speaker` (`audio-control,cs35l19`), `mca2` | i2c1 @0x40 | Cirrus 338S1285 (CS35L19) | out of scope |
