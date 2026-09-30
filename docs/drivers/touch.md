@@ -144,11 +144,17 @@ Writes (each needs its own OK; one at a time; read back):
    `phone.sh insmod touch_clk_t1.ko enable=1 expect=0x<value from step 2>`.
    The module refuses if the value changed. Check the `after` line: `disable 0 enable 1 busy 0
    div 732`. Pads line printed 5 ms later: note pad 142.
-4. HBPP check with the clock on: touch_diag_d2 (still loaded, or reload `build/touch-diag/d2`)
+3b. Touch analog supply (rule-13 pre-approved write): if step 2 showed Chestnut 0x05 = 0x0f,
+   set bit 4 (0x05 = 0x1f) with the chestnut_ldo module used on 2026-09-29, and read it back.
+   The p1 survey found it restored to 0x0f after the earlier test. Order then matches
+   Corellium: analog on, core on (0x319 already 0x01), clock on, then reset release in step 4.
+4. HBPP check with the clock and analog supply on: touch_diag_d2 (still loaded, or reload `build/touch-diag/d2`)
    `step=4 mode=3 speed_hz=1000000 cs_setup_ns=5000 cs_hold_ns=10000`, write `run`. The pass
    mark is HBPP words in the RX (`18e1`, `1aa1`, `4bc1`, ...) and a non-zero N1 version at
    0x10008ffc. If it is still all zeros: restore the clock
-   (`touch_clk_t1.ko restore=1 expect=<step-2 value>`) and try `reset_invert=1` once.
+   (`touch_clk_t1.ko restore=1 expect=<step-2 value>`) and try `reset_invert=1` once. If both
+   fail, the next candidate (Corellium order) is a core power cycle with the analog rail on:
+   0x319 bit0 off, wait, on again. That is a D2255 write outside rule 13 and needs a new OK.
 5. Only if step 4 passed: firmware and driver. Push `firmware/touch/apple/mtfw-n71.bin` (84092 B,
    local, never committed) to `/lib/firmware/apple/`. The touchscreen@0 node needs the
    compatible `apple,n71-multitouch`, `interrupts-extended` on GPIO 142 falling edge, and the
