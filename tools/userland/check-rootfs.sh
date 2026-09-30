@@ -107,12 +107,27 @@ smoke brightnessctl --version
 smoke python3 -c "import gi; gi.require_version('Gtk', '4.0'); gi.require_version('Adw', '1'); from gi.repository import Gtk, Adw; print('PyGObject', gi.__version__, 'GTK', Gtk.get_major_version(), Gtk.get_minor_version(), 'Adw', Adw.get_major_version(), Adw.get_minor_version())"
 smoke env PYTHONPATH=/usr/share/omarchy-phone/apps/phone python3 -c "import omarchy_phone.ui, omarchy_phone.daemon, omarchy_phone.cli; print('Phone app modules import')"
 smoke phonectl --help
+# ophone-btagentd (F5/F6, DESIGN.md "Bluetooth pairing confirmation") needs
+# Gio/GLib from python-gobject on the system bus; ophone-pin needs hashlib's
+# OpenSSL-backed scrypt (DESIGN.md "Lock screen PIN").
+smoke python3 -c "from gi.repository import Gio, GLib; print('Gio/GLib ok', GLib.get_prgname() or 'ok')"
+smoke python3 -c "import hashlib; hashlib.scrypt(b'x', salt=b'0'*16, n=2, r=8, p=1, dklen=8); print('hashlib.scrypt ok')"
+smoke ophone-pin
+# Not `ophone-btagentd --help`: it has no arg parsing and main() immediately
+# blocks on Gio.bus_get_sync()/GLib.MainLoop().run() (see docs/shell/DESIGN.md
+# "Bluetooth pairing confirmation") -- there's no system bus in this chroot to
+# connect to, so running it would hang the check. A syntax/import-only compile
+# is the safe equivalent smoke test for the daemon.
+printf '  %-28s ' "ophone-btagentd compiles"
+chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin python3 -m py_compile /usr/share/omarchy-phone/shell/bin/ophone-btagentd \
+	>/dev/null 2>&1 && echo ok || echo "NO: py_compile failed"
 printf '  %-28s ' "omarchy-phone install"
 ok=yes; for f in /usr/share/omarchy-phone/shell/qs/shell.qml /usr/share/omarchy-phone/shell/hypr/hyprland.lua \
 	/usr/share/omarchy-phone/shell/hypr/devices/iphone6s.lua /usr/share/applications/org.omarchy.Phone.desktop \
 	/etc/pam.d/ophone-lock /etc/systemd/logind.conf.d/omarchy-phone.conf /home/omarchy/.config/hypr/hyprland.lua \
-	/home/omarchy/.config/hypr/plain.lua; do [ -e "$ROOT$f" ] || { ok="NO ($f)"; break; }; done
-for f in ophone-ctl ophone-sys omarchy-phone phoned phonectl; do   # absolute symlinks: resolve inside ROOT
+	/home/omarchy/.config/hypr/plain.lua /usr/lib/tmpfiles.d/omarchy-phone.conf /etc/bluetooth/main.conf \
+	/usr/lib/systemd/user/ophone-btagentd.service; do [ -e "$ROOT$f" ] || { ok="NO ($f)"; break; }; done
+for f in ophone-ctl ophone-sys ophone-pin omarchy-phone phoned phonectl; do   # absolute symlinks: resolve inside ROOT
 	[ -x "$ROOT$(readlink "$ROOT/usr/local/bin/$f" 2>/dev/null || echo /usr/local/bin/$f)" ] || ok="NO ($f)"; done
 echo "$ok; $(tr '\n' ' ' < "$ROOT/usr/share/omarchy-phone/REVISIONS" 2>/dev/null)"
 for fam in "JetBrainsMono Nerd Font" "Noto Sans" "Noto Sans:weight=light"; do
@@ -167,6 +182,7 @@ ok=yes; for u in multi-user.target.wants/omarchy-phone-bt-address.service blueto
 	[ -L "$ROOT/etc/systemd/system/$u" ] || ok="NO ($u)"; done
 [ -L "$ROOT/home/omarchy/.config/systemd/user/default.target.wants/omarchy-phone-session.service" ] || ok="NO (omarchy-phone-session)"
 [ -e "$ROOT/etc/systemd/user/default.target.wants/omarchy-phone-session.service" ] && ok="NO (session enabled globally)"
+[ -L "$ROOT/home/omarchy/.config/systemd/user/default.target.wants/ophone-btagentd.service" ] || ok="NO (ophone-btagentd)"
 echo "$ok"
 printf '  %-28s ' "systemd-analyze verify"
 out="$(chroot "$ROOT" /usr/bin/env -i PATH=/usr/bin SYSTEMD_LOG_LEVEL=warning /usr/bin/systemd-analyze verify --man=no \
@@ -177,9 +193,49 @@ printf '  %-28s ' "scripts sh -n"
 ok=yes; for f in /usr/lib/phone-tk/bt-address /usr/lib/phone-tk/wait-display /usr/local/bin/phone-hyprland; do
 	chroot "$ROOT" /usr/bin/sh -n "$f" 2>/dev/null || ok="NO ($f)"; [ -x "$ROOT$f" ] || ok="NO ($f not executable)"; done
 echo "$ok"
-printf '  %-28s ' "no BT secrets in image"
+printf '  %-28s ' "no BT/PIN secrets in image"
+# bt-address, bt-keys.tgz and the PIN's pin-hash are all seeded/provisioned at
+# deploy time (push-rootfs.sh -> stage2.sh seed/pin), never baked into the image.
 [ -z "$(ls -A "$ROOT/etc/omarchy-phone" 2>/dev/null)" ] && [ -z "$(ls -A "$ROOT/var/lib/bluetooth" 2>/dev/null)" ] \
-	&& echo "ok (seeded at deploy)" || echo "NO: /etc/omarchy-phone or /var/lib/bluetooth not empty"
+	&& echo "ok (seeded/provisioned at deploy)" || echo "NO: /etc/omarchy-phone or /var/lib/bluetooth not empty"
+printf '  %-28s ' "tmpfiles.d omarchy-phone"
+tf="$ROOT/usr/lib/tmpfiles.d/omarchy-phone.conf"
+if [ -s "$tf" ]; then
+	ok=yes
+	grep -Eq '^d[[:space:]]+/run/omarchy-phone[[:space:]]' "$tf" || ok="NO (no /run/omarchy-phone line)"
+	grep -Eq '^d[[:space:]]+/run/omarchy-phone/faillock[[:space:]]' "$tf" || ok="NO (no faillock tally dir line)"
+	grep -Eq '^d[[:space:]]+/etc/omarchy-phone[[:space:]]' "$tf" || ok="NO (no /etc/omarchy-phone line)"
+	echo "$ok"
+else
+	echo "NO: missing"
+fi
+printf '  %-28s ' "bluetooth/main.conf"
+bc="$ROOT/etc/bluetooth/main.conf"
+if [ -s "$bc" ]; then
+	ok=yes
+	grep -Eq '^[[:space:]]*Discoverable[[:space:]]*=[[:space:]]*false' "$bc" || ok="NO (Discoverable not false)"
+	grep -Eq '^[[:space:]]*Pairable[[:space:]]*=[[:space:]]*false' "$bc" || ok="NO (Pairable not false)"
+	grep -Eq '^[[:space:]]*JustWorksRepairing[[:space:]]*=[[:space:]]*never' "$bc" || ok="NO (JustWorksRepairing not never)"
+	grep -Eq '^[[:space:]]*Privacy[[:space:]]*=[[:space:]]*device' "$bc" || ok="NO (Privacy not device)"
+	echo "$ok"
+else
+	echo "NO: missing"
+fi
+printf '  %-28s ' "pam ophone-lock"
+pf="$ROOT/etc/pam.d/ophone-lock"
+if [ -s "$pf" ]; then
+	ok=yes
+	# Only the active directive lines matter -- the file's own comments talk
+	# about the old "include login" chain by name (same self-match risk the
+	# wheel-sudo check above already avoids the same way).
+	grep -v '^[[:space:]]*#' "$pf" | grep -qE '^[[:space:]]*(auth|account|password|session)[[:space:]]+.*include[[:space:]]+login' \
+		&& ok="NO (still includes login -- the PIN must be its own secret, not the account password, F2/F3 in security-review.md)"
+	grep -Eq 'pam_faillock\.so[[:space:]]+preauth[[:space:]]+dir=/run/omarchy-phone/faillock' "$pf" || ok="NO (no faillock preauth on the phone's own tally dir)"
+	grep -q 'pam_exec\.so.*ophone-pin verify' "$pf" || ok="NO (no pam_exec ophone-pin verify)"
+	echo "$ok"
+else
+	echo "NO: missing"
+fi
 printf '  %-28s ' "sshd -t (config test)"; chroot "$ROOT" /usr/bin/sshd -t && echo ok
 printf '  %-28s ' "mesa kms_swrast present"
 [ -e "$ROOT/usr/lib/dri/kms_swrast_dri.so" ] && [ -e "$ROOT/usr/lib/gbm/dri_gbm.so" ] && echo yes || echo NO

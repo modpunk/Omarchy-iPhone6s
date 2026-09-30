@@ -9,7 +9,10 @@ It's the base for Omarchy Phone (Arch Linux ARM + Hyprland).
 laptop rehearsal. It runs on the phone: on 2026-09-29 Hyprland 0.56.2 drew foot on the
 simpledrm panel with llvmpipe (see "Hyprland on simpledrm"). The phone shell and Phone app were
 added the same day and pass the laptop checks; they haven't run on the phone yet (see
-"Omarchy Phone shell and Phone app").
+"Omarchy Phone shell and Phone app"). Also 2026-09-29: `SHELL_REV` bumped to the shell's
+lock-screen PIN, idle auto-lock and Bluetooth pairing agent hardening (branch `shell`,
+commits 33d7601/d84d3ad); the image now installs and enables all of it (see "Security" and
+"Lock screen PIN provisioning").
 
 ## How it boots
 
@@ -52,9 +55,10 @@ contains the Broadcom BT firmware, your SSH public keys and the sshd host keys.
 ## Security
 
 Full writeup: `~/Work/hoolock-iphone5s/notes/security-review.md` (findings F1-F21, a
-P0/P1/P2 plan). This section covers what's implemented on the image/deploy side; the
-lock-screen PIN, idle lock and Bluetooth pairing agent (F2/F4/F5/F6) are shell-side work
-tracked in the Omarchy-Phone repo, not here.
+P0/P1/P2 plan). This section covers what's implemented on the image/deploy side. The
+lock-screen PIN, idle lock and Bluetooth pairing agent (F2/F4/F5/F6) are shell-side *code*,
+tracked in the Omarchy-Phone repo, not here -- but the image is what installs, enables and
+(for the PIN) provisions them; see F2/F5/F6 below and "Lock screen PIN provisioning".
 
 Threat model: today the phone is reachable only over the point-to-point USB link
 (`172.16.42.0/24`) to one laptop. Once a Wi-Fi driver lands, the same image becomes
@@ -70,7 +74,9 @@ that cutover doesn't also have to remember to retrofit a firewall and address bi
 | -- | sudo | `wheel` requires the account password (`NOPASSWD` removed). Checked against the pinned Omarchy Phone shell/app revisions: `phone-hyprland`, `ophone-sys` and the `omarchy-phone-session` unit never call `sudo` (group membership + logind/polkit cover reboot/poweroff/suspend, brightness, etc.), so nothing needed a narrow carve-out | `overlay/etc/sudoers.d/10-wheel` |
 | F19-adj | root telnet | `phone-telnetd` (passwordless root telnet on the USB link, used by `testkit/phone.sh`/`phone.py` after `switch_root`) is opt-in at build time: `ENABLE_TELNETD=1` (default) enables it, `ENABLE_TELNETD=0` leaves it disabled. Default stays on because the dev workflow (`phone.sh ping`, `phone.sh lock`) depends on it; turn it off for anything beyond bench dev, since it's still unauthenticated root | `build-rootfs.sh`, `overlay/etc/systemd/system/phone-telnetd.service` |
 | F15 | secrets in build | `USERPASS` goes to `openssl passwd -6 -stdin`, not argv -- a process argv is visible to any other local user on the build host via `ps` for the life of the call, stdin isn't | `build-rootfs.sh` (`stage_config`) |
-| F17 | secrets lifecycle | `stage2.sh`'s `carry()` (which sweeps small files from `/tmp/6s` into `/var/lib/6s-testkit/` on the new root after `switch_root`) now excludes `bt-address`/`bt-keys.tgz` by name, same as it already excluded `unpack.*` | `phone/stage2.sh` |
+| F17 | secrets lifecycle | `stage2.sh`'s `carry()` (which sweeps small files from `/tmp/6s` into `/var/lib/6s-testkit/` on the new root after `switch_root`) excludes `bt-address`/`bt-keys.tgz`/`phone-pin` by name, same as it already excluded `unpack.*` | `phone/stage2.sh` |
+| F2/F3 | lock-screen PIN | `/etc/pam.d/ophone-lock` and `/usr/lib/tmpfiles.d/omarchy-phone.conf` installed from the shell tree (not hand-written here); the tmpfiles.d file creates `/run/omarchy-phone/faillock` (pam_faillock's tally dir, needed because this PAM stack runs as the unprivileged session user) and `/etc/omarchy-phone` (root:omarchy 0750, holds `pin-hash`) *before* anything can try to unlock -- it's under `/usr/lib/tmpfiles.d`, scanned by `systemd-tmpfiles-setup.service`, part of `sysinit.target`'s default dependencies, which runs to completion long before any login/session unit. `ophone-pin` is symlinked onto `$PATH` for `sudo ophone-pin set`. See "Lock screen PIN provisioning" for provisioning the actual PIN | `build-rootfs.sh` (`stage_config_phone`), `check-rootfs.sh` |
+| F5/F6 | Bluetooth pairing agent | `/etc/bluetooth/main.conf` (not discoverable/pairable at rest, no Just-Works re-pairing, resolvable LE address) and `ophone-btagentd.service` (the real on-screen-confirm pairing agent, replacing bluetoothd's auto-accept fallback) installed from the shell tree and enabled for `$USERNAME` the same way `omarchy-phone-session.service` is (a `default.target.wants` symlink written at build time -- there's no running user manager in this build namespace to run `systemctl --user enable` with) | `build-rootfs.sh` (`stage_config_phone`, "units"), `check-rootfs.sh` |
 
 `check-rootfs.sh` verifies all of the above except F11 (a build-time gate, not something to
 re-check from the packed rootfs -- a build that got past `stage_install` already proved the
@@ -118,10 +124,12 @@ Rules from `testkit/TESTING-RULES.md` apply. Steps 2 to 4 hold the shared phone 
    ```sh
    ~/Work/omarchy-iphone6s/tools/userland/push-rootfs.sh
    ```
-   It pushes `stage2.sh` and, if they exist, the Bluetooth address and pairing tarball (below),
-   mounts `/newroot`, streams the tarball, then checks the tar exit code and the stream md5. It
-   prints `unpacked OK`, runs `stage2.sh seed` (moves the Bluetooth files into
-   `/newroot/etc/omarchy-phone/`, root 0600) and sets the clock.
+   It pushes `stage2.sh` and, if they exist, the Bluetooth address/pairing tarball and a
+   lock-screen PIN (below, and "Lock screen PIN provisioning"), mounts `/newroot`, streams the
+   tarball, then checks the tar exit code and the stream md5. It prints `unpacked OK`, runs
+   `stage2.sh seed` (moves the Bluetooth files into `/newroot/etc/omarchy-phone/`, root 0600),
+   `stage2.sh pin` if a PIN was pushed (runs `ophone-pin set` inside `/newroot`), and sets the
+   clock.
 4. **Hand over:**
    ```sh
    ~/Work/hoolock-iphone5s/testkit/phone.sh lock 'sh /tmp/6s/stage2.sh go'
@@ -339,10 +347,13 @@ two defaults (or pass the variables) to ship newer ones. Both SHAs go into
 |---|---|
 | `/usr/share/omarchy-phone/shell/` | `hypr/` (Lua config, `devices/iphone6s.lua`), `qs/` (QuickShell UI), `bin/`, `system/` |
 | `/usr/share/omarchy-phone/apps/phone/` | `omarchy_phone/` (byte-compiled at build), `bin/`, `data/` |
-| `/usr/local/bin/{ophone-ctl,ophone-sys,omarchy-phone,phoned,phonectl}` | symlinks into the trees above |
+| `/usr/local/bin/{ophone-ctl,ophone-sys,ophone-pin,omarchy-phone,phoned,phonectl}` | symlinks into the trees above |
 | `/usr/share/applications/org.omarchy.Phone.desktop` | the Phone app in the shell's app grid and dock (also the `tel:`/`sip:` handler) |
 | `/etc/systemd/logind.conf.d/omarchy-phone.conf` | logind ignores the power key, so Hyprland (and the shell) get it |
-| `/etc/pam.d/ophone-lock` | the lock screen's PIN check (`auth include login`) |
+| `/etc/pam.d/ophone-lock` | the lock screen's PIN check: its own secret (`pam_exec` -> `ophone-pin verify` against `/etc/omarchy-phone/pin-hash`), `pam_faillock`-throttled, independent of the account/SSH/sudo password (F2/F3, see "Lock screen PIN provisioning") |
+| `/usr/lib/tmpfiles.d/omarchy-phone.conf` | creates `/run/omarchy-phone/faillock` (pam_faillock's tally dir) and `/etc/omarchy-phone` (`pin-hash`'s directory) before anything can reach the lock screen |
+| `/etc/bluetooth/main.conf` | bluetoothd defaults: not discoverable/pairable at rest, no Just-Works re-pairing, resolvable LE address (F5) |
+| `/usr/lib/systemd/user/ophone-btagentd.service` | the real on-screen Pair/Reject Bluetooth agent, enabled for `$USERNAME` (F5/F6) |
 | `~omarchy/.config/hypr/hyprland.lua` | session wrapper (from `/etc/skel`); `plain.lua` is the old foot-only config |
 
 What starts: `phone-hyprland` (unchanged simpledrm env and `aq-simpledrm.so` preload) also
@@ -361,10 +372,14 @@ Drive it over SSH: `ophone-ctl home|switcher|shade|lock|keyboard|isLocked|notifi
 `notify-send -a Test Hello "from ssh"`, `omarchy-phone &`, `phonectl simulate "+1 900 555 0123" "Prize Dept"`.
 
 Known gaps and caveats:
-- **Lock screen:** the PIN pad checks the user's password through PAM, and the default password
-  `omarchy` isn't numeric, so a lock (power key short press, `ophone-ctl lock`) can't be undone
-  on the screen. Over SSH, restart the session (the shell starts unlocked):
-  `systemctl --user restart omarchy-phone-session`, or build with a numeric `USERPASS=`.
+- **Lock screen:** the PIN is its own secret (see "Lock screen PIN provisioning"), independent
+  of the account/SSH/sudo password, so unlike before there's no numeric-`USERPASS` workaround
+  needed. A freshly flashed, not-yet-provisioned device has no PIN configured at all
+  (`Phone.qml`'s `pinConfigured`) and boots (and restarts) unlocked; once one is provisioned the
+  shell boots/restarts locked from then on, including a plain `systemctl --user restart
+  omarchy-phone-session` -- that's no longer an unlock bypass. Forgot the PIN: root can always
+  set a new one without knowing the old one (`ophone-pin set` doesn't check it), over SSH:
+  `ssh omarchy@172.16.42.1 sudo ophone-pin set`.
 - **Wi-Fi tile and status:** `Quickshell.Networking` and `ophone-sys wifi|airplane` use
   NetworkManager, which isn't installed (the image uses iwd, and there's no Wi-Fi driver yet).
 - `devices/iphone6s.lua` asks for `750x1334@60`, where the plain config used `preferred`.
@@ -373,6 +388,33 @@ Known gaps and caveats:
   `libvips` (an appstream dependency that nothing links; it pulls imath, openexr, hdf5 and more,
   about 90 MB), `xdg-utils`, Qt translations. Not installed: NetworkManager, baresip, and wvkbd
   and Yaru icons (neither of those two is in ALARM). libgtk-4 links libcups and GStreamer directly, so those stay.
+
+## Lock screen PIN provisioning
+
+The image installs everything the PIN needs (`/etc/pam.d/ophone-lock`, the tmpfiles.d rule,
+`ophone-pin` on `$PATH`) but never bakes in an actual PIN -- like the Bluetooth address/keys,
+it's a per-device secret provisioned at deploy time, not part of the build
+(`check-rootfs.sh`'s "no BT/PIN secrets in image" check). Two ways to set one, either or both:
+
+1. **Automatic, at deploy time** (`push-rootfs.sh`, same shape as the BT seed): if
+   `PHONE_PIN_FILE` (default `~/Work/hoolock-iphone5s/firmware/phone-pin.local`, one line,
+   4-12 digits) has content, it's pushed to the phone the same way `BT_ADDR_FILE` is (a
+   private 0600 temp file, fixed name, never printed) and `stage2.sh pin` runs `ophone-pin set`
+   inside `/newroot` with it (chroot, `/proc` and `/dev` bind-mounted for the call only) right
+   after `stage2.sh seed`, before `go` -- so the phone boots already locked. No file there:
+   `PROMPT_PIN=1` prompts for it twice on the laptop's terminal instead (not echoed, kept only
+   in a shell variable, never written to disk on the laptop). `NO_PIN=1` skips PIN provisioning
+   entirely for that run. Like the BT files, the pushed `phone-pin` is deleted right after use
+   and excluded from `stage2.sh carry()`, so it never lingers in `/tmp/6s` or
+   `/var/lib/6s-testkit`.
+2. **Manual, any time, over SSH** (no laptop-side file needed, and how to change an existing
+   PIN or recover a forgotten one -- `ophone-pin set` doesn't ask for the old one):
+   ```sh
+   ssh omarchy@172.16.42.1 sudo ophone-pin set
+   ```
+
+Either way the PIN itself is never printed, logged or committed; only `ophone-pin`'s own
+"wrote /etc/omarchy-phone/pin-hash (owner root, group omarchy, mode 640)" confirmation is.
 
 ## Kernel asks (for the integration config)
 
@@ -413,10 +455,16 @@ ssh-sk-helper/libfido2, arpd, sensord, tiffgt, pylibmount, Qt's gtk3 platform th
 mysql/odbc/psql SQL drivers, appstream's `asc-mediaworker` (libvips)). None of the configured
 services use them. The smoke tests (systemd, Hyprland, foot, sshd, iwd, bluetoothd, bluetoothctl,
 pipewire, wireplumber, seatd, busybox, `sshd -t`, `qs`, upowerd, brightnessctl, PyGObject with
-GTK 4.22 + Adw 1.9, the Phone app modules, `phonectl`) all start under qemu. The check also
-parses both session configs with `Hyprland --verify-config` (phone shell and `PHONE_PLAIN=1`),
-checks the font matches (`JetBrainsMono Nerd Font`, `Noto Sans`), the `call-start-symbolic`
-icon, the user `dbus.socket`, and the jemalloc 16K run (see "16K pages").
+GTK 4.22 + Adw 1.9, the Phone app modules, `phonectl`, `ophone-pin`, `Gio`/`GLib` and
+`hashlib.scrypt` for `ophone-pin`/`ophone-btagentd`) all start under qemu -- except
+`ophone-btagentd` itself, which isn't run (its `main()` blocks forever on the system bus, which
+doesn't exist in this chroot); it only gets a `python3 -m py_compile` syntax check. The check
+also parses both session configs with `Hyprland --verify-config` (phone shell and
+`PHONE_PLAIN=1`), checks the font matches (`JetBrainsMono Nerd Font`, `Noto Sans`), the
+`call-start-symbolic` icon, the user `dbus.socket`, the jemalloc 16K run (see "16K pages"), the
+lock-screen PIN wiring (`/etc/pam.d/ophone-lock`'s PAM chain, the tmpfiles.d rule's two `d`
+lines, `/etc/bluetooth/main.conf`'s directives, and `ophone-btagentd.service` being enabled for
+`omarchy`), and that no BT/PIN secret ever ends up baked into the image.
 
 Known gaps: busybox tar drops file capabilities, so `newuidmap`/`newgidmap` lose
 `cap_setuid`/`cap_setgid`. Only rootless containers need those; on the phone, run
@@ -438,11 +486,11 @@ them. `ping` works through `net.ipv4.ping_group_range` without capabilities.
 | `tools/userland/check-rootfs.sh` | laptop | 16K ELF/allocator scan, library resolution, qemu smoke tests |
 | `tools/userland/mk-initramfs.sh` | laptop | builds `initramfs-userland.gz` |
 | `tools/userland/test-switch-sim.sh` | laptop | PID 1 switch_root rehearsal with the ramdisk's own busybox |
-| `tools/userland/push-rootfs.sh` | laptop | push BT seed files, stream + unpack + verify, set the clock and timezone (`--go` to hand over and wait for ssh) |
+| `tools/userland/push-rootfs.sh` | laptop | push BT seed files and the lock-screen PIN (`PHONE_PIN_FILE`/`PROMPT_PIN`/`NO_PIN`, see "Lock screen PIN provisioning"), stream + unpack + verify, set the clock and timezone (`--go` to hand over and wait for ssh) |
 | `tools/userland/overlay/etc/modules-load.d/`, `modprobe.d/` | phone | driver load order and the gauge softdep |
 | `tools/userland/overlay/etc/systemd/system/omarchy-phone-bt-{keys,address}.service`, `overlay/usr/lib/phone-tk/bt-address` | phone | Bluetooth pairing restore and public address |
 | `tools/userland/overlay/etc/nftables.conf` | phone | default-deny inbound firewall (`lo` + `usb0` only, see "Security") |
 | `tools/userland/overlay/etc/systemd/system/sshd.service.d/10-phone.conf` | phone | orders sshd after `usb0`, matches `phone-telnetd.service`'s restart backoff (see "Security", F7) |
 | `tools/userland/overlay/etc/systemd/user/omarchy-phone-session.service`, `overlay/usr/lib/phone-tk/wait-display` | phone | starts the phone session at boot |
-| `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `timezone`, `go`, `nsboot` |
+| `tools/userland/phone/stage2.sh` | phone | `prep`, `recv`, `unpack`, `status`, `seed`, `pin`, `timezone`, `go`, `nsboot` |
 | `tools/userland/phone/userland-switch.sh` | phone (PID 1) | sourced by the patched `/init` |
